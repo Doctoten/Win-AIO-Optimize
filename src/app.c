@@ -9,9 +9,15 @@
 
 HINSTANCE g_instance;
 HFONT g_font;
+HFONT g_font_semibold;
+HFONT g_font_title;
+HFONT g_font_subtitle;
 BOOL g_vi = TRUE;
 static HWND main_window, log_window, progress_window, timer_status;
 static HFONT title_font;
+static HWND active_page, confirmation_window;
+static BOOL dashboard_advanced, closing_main;
+static void layout_main(HWND window);
 static LONG running_job;
 static CRITICAL_SECTION log_lock;
 static wchar_t log_path[MAX_PATH];
@@ -25,11 +31,57 @@ enum {
     ID_DELAY, ID_UNIT, ID_SCHEDULE, ID_CANCEL, ID_LANGUAGE, ID_TITLE, ID_SUBTITLE,
     ID_ACCOUNT, ID_TIMER_LABEL, ID_LOG_LABEL, ID_OPEN_LOG, ID_SYSTEM_INFO, ID_THEME,
     ID_PC_SUMMARY, ID_PC_LABEL, ID_NAV_LABEL, ID_BACKUPS, ID_PROTECTION_NOTE, ID_BRAND,
-    ID_SYSTEM_PROTECTION, ID_DETAILS
+    ID_SYSTEM_PROTECTION, ID_DETAILS, ID_QUICK_SETUP, ID_QUICK_NETWORK,
+    ID_QUICK_BLOAT, ID_QUICK_LABEL, ID_SAFETY_LABEL, ID_BACK, ID_ADVANCED, ID_APP_ICON, ID_HOME
 };
 
 const wchar_t *tr(const wchar_t *vi, const wchar_t *en) { return g_vi ? vi : en; }
 BOOL app_is_smoke_test(void) { return smoke_mode; }
+HWND app_main_window(void) { return main_window; }
+
+static void dashboard_visibility(void) {
+    const int basic[] = {ID_TITLE,ID_SUBTITLE,ID_PC_LABEL,ID_PC_SUMMARY,ID_DETAILS,
+        ID_QUICK_LABEL,ID_QUICK_SETUP,ID_QUICK_NETWORK,ID_QUICK_BLOAT,ID_TIMER_LABEL,
+        ID_DELAY,ID_UNIT,ID_SCHEDULE,ID_CANCEL,ID_ADVANCED};
+    const int advanced[] = {ID_ACCOUNT,ID_LOG_LABEL,ID_OPEN_LOG,ID_SYSTEM_PROTECTION};
+    BOOL home = !active_page && !confirmation_window;
+    int selected=active_page?(int)(INT_PTR)GetPropW(active_page,L"WAIONav"):ID_HOME;
+    const int nav[]={ID_HOME,ID_SYSTEM_INFO,ID_SETUP,ID_NETWORK,ID_BLOAT};
+    for (unsigned i=0;i<ARRAYSIZE(nav);++i) {
+        HWND control=GetDlgItem(main_window,nav[i]);
+        if (nav[i]==selected) SetPropW(control,L"WAIOActive",(HANDLE)1);
+        else RemovePropW(control,L"WAIOActive");
+        InvalidateRect(control,NULL,FALSE);
+    }
+    for (unsigned i=0;i<ARRAYSIZE(basic);++i) ShowWindow(GetDlgItem(main_window,basic[i]),home?SW_SHOW:SW_HIDE);
+    for (unsigned i=0;i<ARRAYSIZE(advanced);++i) ShowWindow(GetDlgItem(main_window,advanced[i]),home&&dashboard_advanced?SW_SHOW:SW_HIDE);
+    ShowWindow(timer_status,home?SW_SHOW:SW_HIDE);
+    ShowWindow(log_window,home&&dashboard_advanced?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(main_window,ID_BACK),active_page&&!confirmation_window?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(main_window,ID_SAFETY_LABEL),SW_HIDE);
+    ShowWindow(GetDlgItem(main_window,ID_PROTECTION_NOTE),SW_HIDE);
+    ShowWindow(GetDlgItem(main_window,ID_NAV_LABEL),SW_HIDE);
+}
+void app_show_page(HWND page) {
+    if (!main_window || !IsWindow(page) || GetParent(page)!=main_window ||
+        app_busy(NULL) || confirmation_window) return;
+    if (IsWindow(active_page) && active_page!=page) ShowWindow(active_page,SW_HIDE);
+    active_page=page;
+    dashboard_visibility(); layout_main(main_window);
+    ShowWindow(page,SW_SHOW);
+    SetWindowPos(page,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    SetFocus(GetNextDlgTabItem(page,NULL,FALSE));
+}
+void app_home(void) {
+    if (!main_window || closing_main || app_busy(NULL) || confirmation_window) return;
+    if (IsWindow(active_page)) ShowWindow(active_page,SW_HIDE);
+    active_page=NULL;
+    dashboard_visibility(); layout_main(main_window);
+    SetFocus(GetDlgItem(main_window,ID_HOME));
+}
+void app_page_destroyed(HWND page) {
+    if (active_page==page) { active_page=NULL; if (!closing_main) app_home(); }
+}
 
 static const wchar_t language_key[] = L"Software\\Doctoten\\WinAIOOptimize";
 static void language_load(void) {
@@ -63,7 +115,7 @@ HWND app_control(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD sty
     if (!lstrcmpiW(cls, L"STATIC")) style |= SS_NOPREFIX;
     if (!lstrcmpiW(cls, L"EDIT") || !wcscmp(cls, WC_LISTVIEWW)) style &= ~WS_BORDER;
     DWORD extended = 0;
-    HWND control = CreateWindowExW(extended, cls, text, WS_CHILD | WS_VISIBLE | style,
+    HWND control = CreateWindowExW(extended, cls, text, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
                                   x, y, w, h, parent, (HMENU)(INT_PTR)id, g_instance, NULL);
     if (control) {
         SendMessageW(control, WM_SETFONT, (WPARAM)g_font, TRUE);
@@ -148,6 +200,18 @@ static void confirmation_prepare(void *argument) {
     Confirmation *state = argument;
     state->error = protection_prepare(state->registry, state->restore);
 }
+static void confirmation_layout(HWND window, BOOL protect) {
+    RECT r; GetClientRect(window,&r);
+    int width=r.right-48, bottom=r.bottom-24;
+    int detail_height=max(96,r.bottom-64-(protect?230:92));
+    theme_move(GetDlgItem(window,701),24,18,width,32);
+    theme_move(GetDlgItem(window,10),24,64,width,detail_height);
+    theme_move(GetDlgItem(window,702),24,76+detail_height,width,80);
+    theme_move(GetDlgItem(window,ID_PROTECT_STATUS),24,164+detail_height,width,48);
+    theme_move(GetDlgItem(window,IDCANCEL),r.right-320,bottom-40,130,40);
+    theme_move(GetDlgItem(window,IDOK),r.right-174,bottom-40,150,40);
+    theme_repaint(window);
+}
 static LRESULT CALLBACK confirm_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     Confirmation *state = (Confirmation *)GetWindowLongPtrW(window, GWLP_USERDATA);
     switch (message) {
@@ -155,13 +219,16 @@ static LRESULT CALLBACK confirm_proc(HWND window, UINT message, WPARAM wp, LPARA
         state = ((CREATESTRUCTW *)lp)->lpCreateParams;
         SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)state);
         theme_attach(window);
-        app_control(window, L"STATIC", tr(L"Xem lại thay đổi trước khi đồng ý", L"Review the changes before you agree"),
-                    0, 24, 18, 744, 30, 0);
-        HWND details = app_control(window, L"EDIT", state->details,
+        HWND title = app_control(window, L"STATIC", tr(L"Xem lại thay đổi trước khi đồng ý", L"Review the changes before you agree"),
+                    0, 24, 18, 744, 30, 701);
+        SendMessageW(title, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        HWND details = app_control(window, L"EDIT", L"",
                     ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
                     24, 58, 744, 315, 10);
         if (!details) return -1; /* Never accept changes if their review cannot be displayed. */
         SendMessageW(details, EM_SETLIMITTEXT, 131072, 0);
+        SetWindowTextW(details,state->details);
+        if ((size_t)GetWindowTextLengthW(details)!=wcslen(state->details)) return -1;
         SendMessageW(details, EM_SETSEL, 0, 0);
         if (state->protect) {
             app_control(window, L"STATIC", tr(
@@ -171,13 +238,14 @@ static LRESULT CALLBACK confirm_proc(HWND window, UINT message, WPARAM wp, LPARA
                 L"Registry: save SYSTEM, SOFTWARE and HKCU in the app data folder.\r\n"
                 L"System Protection must be enabled; Windows may reuse a recent restore point.\r\n"
                 L"Selected protection must succeed before changes. This does not back up personal files."),
-                0, 24, 391, 744, 78, 0);
+                0, 24, 391, 744, 78, 702);
             app_control(window, L"STATIC", L"", 0, 24, 482, 744, 70, ID_PROTECT_STATUS);
         }
         app_control(window, L"BUTTON", tr(L"Hủy", L"Cancel"), WS_TABSTOP | BS_DEFPUSHBUTTON,
                     476, state->protect ? 568 : 394, 130, 40, IDCANCEL);
-        app_control(window, L"BUTTON", tr(L"Tôi đồng ý", L"I agree"), WS_TABSTOP,
+        HWND ok_btn = app_control(window, L"BUTTON", tr(L"Tôi đồng ý", L"I agree"), WS_TABSTOP,
                     618, state->protect ? 568 : 394, 150, 40, IDOK);
+        SetPropW(ok_btn, L"WAIOPrimary", (HANDLE)1);
         SetFocus(GetDlgItem(window, IDCANCEL));
         return 0;
     }
@@ -215,6 +283,7 @@ static LRESULT CALLBACK confirm_proc(HWND window, UINT message, WPARAM wp, LPARA
         }
         return 0;
     case WM_CLOSE: if (!state || !state->working) DestroyWindow(window); return 0;
+    case WM_SIZE: if (state) confirmation_layout(window,state->protect); return 0;
     case DM_GETDEFID: return MAKELONG(IDCANCEL, DC_HASDEFID);
     }
     return DefWindowProcW(window, message, wp, lp);
@@ -228,26 +297,25 @@ static BOOL confirm_dialog(HWND owner, const wchar_t *details, BOOL registry, BO
     RegisterClassW(&cls);
     Confirmation state = {0}; state.details = details; state.protect = registry || restore;
     state.registry = registry; state.restore = restore;
-    BOOL protect = state.protect;
-    RECT area; GetWindowRect(owner, &area);
-    RECT work; SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    int height = protect ? 660 : 488;
-    int x = area.left + 24, y = area.top + 24;
-    if (x + 812 > work.right) x = work.right - 812;
-    if (y + height > work.bottom) y = work.bottom - height;
-    if (x < work.left) x = work.left;
-    if (y < work.top) y = work.top;
-    HWND dialog = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, cls.lpszClassName,
-                    tr(L"Xác nhận thay đổi", L"Confirm changes"), WS_CAPTION | WS_SYSMENU,
-                    x, y, 812, height, owner, NULL, g_instance, &state);
+    /* Review is a child page, so the application keeps a single top-level window. */
+    HWND dialog = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName,
+                    tr(L"Xác nhận thay đổi", L"Confirm changes"), WS_CHILD | WS_CLIPCHILDREN,
+                    224, 72, 812, 660, main_window, NULL, g_instance, &state);
     if (!dialog) return FALSE;
-    HWND root_owner = GetAncestor(owner, GA_ROOTOWNER);
-    BOOL owner_was_enabled = IsWindowEnabled(owner);
-    BOOL root_was_enabled = root_owner && root_owner != owner && IsWindowEnabled(root_owner);
-    EnableWindow(owner, FALSE);
-    if (root_was_enabled) EnableWindow(root_owner, FALSE);
-    ShowWindow(dialog, SW_SHOW);
-    SetFocus(GetDlgItem(dialog, IDCANCEL));
+    HWND disabled[128]; unsigned disabled_count=0;
+    for (HWND child=GetWindow(main_window,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
+        if (child!=dialog && IsWindowEnabled(child)) {
+            if (disabled_count==ARRAYSIZE(disabled)) { DestroyWindow(dialog); return FALSE; }
+            disabled[disabled_count++]=child;
+        }
+    }
+    for (unsigned i=0;i<disabled_count;++i) EnableWindow(disabled[i],FALSE);
+    confirmation_window=dialog;
+    if (IsWindow(active_page)) ShowWindow(active_page,SW_HIDE);
+    layout_main(main_window);
+    ShowWindow(dialog,SW_SHOW);
+    SetWindowPos(dialog,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    SetFocus(GetDlgItem(dialog,IDCANCEL));
     MSG msg;
     BOOL quit = FALSE;
     while (IsWindow(dialog)) {
@@ -265,9 +333,14 @@ static BOOL confirm_dialog(HWND owner, const wchar_t *details, BOOL registry, BO
         }
     }
     if (IsWindow(dialog)) DestroyWindow(dialog);
-    if (IsWindow(owner) && owner_was_enabled) EnableWindow(owner, TRUE);
-    if (IsWindow(root_owner) && root_was_enabled) EnableWindow(root_owner, TRUE);
-    if (IsWindow(owner)) SetForegroundWindow(owner);
+    confirmation_window=NULL;
+    for (unsigned i=0;i<disabled_count;++i) if (IsWindow(disabled[i])) EnableWindow(disabled[i],TRUE);
+    if (IsWindow(main_window)) {
+        if (IsWindow(active_page)) ShowWindow(active_page,SW_SHOW);
+        layout_main(main_window);
+        SetForegroundWindow(main_window);
+        SetFocus(IsWindow(active_page)?GetNextDlgTabItem(active_page,NULL,FALSE):GetDlgItem(main_window,ID_HOME));
+    }
     if (quit) PostQuitMessage(0);
     return state.accepted && IsWindow(owner) && !quit;
 }
@@ -281,7 +354,7 @@ static BOOL confirmation_ui_test(HWND owner) {
     cls.lpszClassName = L"WAIO.Confirm"; cls.hCursor = LoadCursorW(NULL, IDC_ARROW); RegisterClassW(&cls);
     Confirmation state = {0}; state.protect = TRUE; state.registry = TRUE; state.restore = TRUE;
     state.details = L"Read-only consent test";
-    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"", WS_CAPTION | WS_SYSMENU,
+    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"", WS_CHILD | WS_CLIPCHILDREN,
         0, 0, 812, 660, owner, NULL, g_instance, &state);
     if (!window) return FALSE;
     BOOL ok = state.registry && state.restore && LOWORD(SendMessageW(window, DM_GETDEFID, 0, 0)) == IDCANCEL;
@@ -349,7 +422,10 @@ BOOL app_start_job(HWND owner, void (*work)(void *), void *context) {
         DWORD error = GetLastError(); free(job); app_finish_job(owner); app_error(owner, tr(L"Tác vụ nền", L"Worker"), error); return FALSE;
     }
     CloseHandle(thread);
-    if (progress_window) { ShowWindow(progress_window, SW_SHOW); SendMessageW(progress_window, PBM_SETMARQUEE, TRUE, 40); }
+    if (progress_window) {
+        SetWindowPos(progress_window,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+        SendMessageW(progress_window, PBM_SETMARQUEE, TRUE, 40);
+    }
     return TRUE;
 }
 
@@ -358,7 +434,7 @@ void app_finish_job(HWND owner) {
     InterlockedExchange(&running_job, 0);
     EnableWindow(owner, TRUE);
     if (progress_window) { SendMessageW(progress_window, PBM_SETMARQUEE, FALSE, 0); ShowWindow(progress_window, SW_HIDE); }
-    SetForegroundWindow(owner);
+    SetForegroundWindow(GetAncestor(owner, GA_ROOT));
 }
 
 BOOL app_busy(HWND owner) {
@@ -449,19 +525,30 @@ static BOOL is_admin(void) {
 }
 
 static void update_labels(HWND window) {
-    SetWindowTextW(window, L"Win AIO Optimize 6.0 — Doctoten");
+    SetWindowTextW(window, L"Win AIO Optimize — Doctoten");
     SetDlgItemTextW(window, ID_TITLE, tr(L"Tổng quan", L"Dashboard"));
-    SetDlgItemTextW(window, ID_SUBTITLE, tr(L"Hiểu máy tính của bạn. Chủ động chọn từng thay đổi.", L"Know your computer. Choose every change."));
-    SetDlgItemTextW(window, ID_BRAND, L"Win AIO\r\nOptimize");
-    SetDlgItemTextW(window, ID_NAV_LABEL, tr(L"CÔNG CỤ  /  6.0", L"TOOLS  /  6.0"));
+    SetDlgItemTextW(window, ID_SUBTITLE, tr(L"Chọn công cụ bạn cần để bắt đầu.", L"Choose a tool to get started."));
+    SetDlgItemTextW(window, ID_BRAND, L"Win AIO Optimize");
+    SetDlgItemTextW(window, ID_NAV_LABEL, tr(L"Không gian làm việc", L"Workspace"));
     SetDlgItemTextW(window, ID_SYSTEM_INFO, tr(L"Thông tin máy", L"System information"));
-    SetDlgItemTextW(window, ID_DETAILS, tr(L"Xem đầy đủ thông tin", L"View all specifications"));
-    SetDlgItemTextW(window, ID_PC_LABEL, tr(L"MÁY TÍNH CỦA BẠN", L"YOUR COMPUTER"));
+    SetDlgItemTextW(window, ID_DETAILS, tr(L"Thông tin máy", L"Specifications"));
+    SetDlgItemTextW(window, ID_BACK, tr(L"‹  Tổng quan", L"‹  Dashboard"));
+    SetDlgItemTextW(window, ID_HOME, tr(L"Tổng quan", L"Dashboard"));
+    SetDlgItemTextW(window, ID_ADVANCED, dashboard_advanced ? tr(L"Ẩn nâng cao", L"Hide advanced") : tr(L"Nâng cao", L"Advanced"));
+    SetDlgItemTextW(window, ID_PC_LABEL, tr(L"Máy tính của bạn", L"Your computer"));
     SetDlgItemTextW(window, ID_BACKUPS, tr(L"Mở thư mục sao lưu", L"Open backups"));
     SetDlgItemTextW(window, ID_SYSTEM_PROTECTION, tr(L"Bảo vệ hệ thống…", L"System Protection…"));
+    SetDlgItemTextW(window, ID_QUICK_LABEL, tr(L"Bạn muốn làm gì?", L"What would you like to do?"));
+    SetDlgItemTextW(window, ID_QUICK_SETUP, tr(L"Tối ưu Windows\nQuyền riêng tư và trải nghiệm.",
+        L"Optimize Windows\nPrivacy and Windows experience."));
+    SetDlgItemTextW(window, ID_QUICK_NETWORK, tr(L"Mạng & DNS\nKết nối và máy chủ DNS.",
+        L"Network & DNS\nConnections and DNS providers."));
+    SetDlgItemTextW(window, ID_QUICK_BLOAT, tr(L"Ứng dụng tùy chọn\nChọn ứng dụng muốn gỡ.",
+        L"Optional apps\nChoose apps to remove."));
+    SetDlgItemTextW(window, ID_SAFETY_LABEL, tr(L"Trước khi thay đổi", L"Before making changes"));
     SetDlgItemTextW(window, ID_PROTECTION_NOTE, tr(
-        L"THIẾT LẬP WINDOWS\r\nChọn tối ưu theo từng nhóm và xem rõ ảnh hưởng trước khi áp dụng.\r\nCác lựa chọn sao lưu Registry và điểm khôi phục nằm trong Windows Setup.",
-        L"WINDOWS SETUP\r\nChoose settings by category and review their effects before applying.\r\nRegistry backup and restore point options are available in Windows Setup."));
+        L"Bạn luôn được xem lại và xác nhận. Tùy chọn sao lưu Registry và điểm khôi phục có trong Thiết lập Windows.",
+        L"Review and confirm every change. Registry backup and restore point options are in Windows Setup."));
     wchar_t summary[768]; system_summary(summary, ARRAYSIZE(summary)); SetDlgItemTextW(window, ID_PC_SUMMARY, summary);
     HWND theme = GetDlgItem(window, ID_THEME);
     SendMessageW(theme, CB_RESETCONTENT, 0, 0);
@@ -488,56 +575,113 @@ static void update_labels(HWND window) {
     SendMessageW(units, CB_SETCURSEL, selected == 1 ? 1 : 0, 0);
     wchar_t name[256] = L"?", account[512], status[512]; DWORD capacity = ARRAYSIZE(name);
     GetUserNameW(name, &capacity);
-    StringCchPrintfW(account, ARRAYSIZE(account), tr(L"Tài khoản áp dụng: %s  •  Windows build %lu  •  Mọi tối ưu đều cần xác nhận",
-                     L"Changes apply to account: %s  •  Windows build %lu  •  All optimizations require consent"), name, app_windows_build());
+    StringCchPrintfW(account, ARRAYSIZE(account), tr(L"Tài khoản: %s  •  Windows build %lu",
+                     L"Account: %s  •  Windows build %lu"), smoke_mode ? L"Preview" : name, app_windows_build());
     SetDlgItemTextW(window, ID_ACCOUNT, account);
     if (smoke_mode) StringCchCopyW(status, ARRAYSIZE(status), tr(L"Kiểm tra giao diện chỉ đọc", L"Read-only UI smoke test"));
     else shutdown_status(status, ARRAYSIZE(status));
     SetWindowTextW(timer_status, status);
 }
 
+typedef struct {
+    int x, width, tile_top, tile_height, log_top;
+    RECT computer, timer, safety;
+} DashboardLayout;
+
+static DashboardLayout dashboard_layout(HWND window) {
+    RECT r; GetClientRect(window, &r);
+    DashboardLayout d = {0};
+    d.width = min(1120, max(600, r.right - 224 - 56));
+    d.x = 224 + (r.right - 224 - d.width) / 2;
+    BOOL compact = r.bottom < 800;
+    SetRect(&d.computer, d.x, 108, d.x + d.width, 218);
+    d.tile_top = d.computer.bottom + 46;
+    d.tile_height = compact ? 112 : 132;
+    int utility_top = d.tile_top + d.tile_height + 16;
+    int timer_width = d.width;
+    SetRect(&d.timer, d.x, utility_top, d.x + timer_width, utility_top + 120);
+    SetRect(&d.safety, d.timer.right + 16, utility_top, d.x + d.width, utility_top + 120);
+    d.log_top = d.timer.bottom + 100;
+    return d;
+}
+
 static void layout_main(HWND window) {
     RECT r; GetClientRect(window, &r);
-    int width = r.right, height = r.bottom, x = 258, content = width - x - 28;
-    MoveWindow(GetDlgItem(window, ID_BRAND), 24, 26, 185, 78, TRUE);
-    MoveWindow(GetDlgItem(window, ID_NAV_LABEL), 24, 124, 186, 24, TRUE);
-    int buttons[] = {ID_SYSTEM_INFO, ID_SETUP, ID_NETWORK, ID_BLOAT, ID_WIFI, ID_RESTORE, ID_DRIVERS};
-    for (int i = 0; i < 7; ++i) MoveWindow(GetDlgItem(window, buttons[i]), 18, 166 + i * 52, 196, 42, TRUE);
-    MoveWindow(GetDlgItem(window, ID_SYSTEM_PROTECTION), 18, height-116, 196, 40, TRUE);
-    MoveWindow(GetDlgItem(window, ID_BACKUPS), 18, height-64, 196, 40, TRUE);
-    MoveWindow(GetDlgItem(window, ID_TITLE), x, 24, content-360, 44, TRUE);
-    MoveWindow(GetDlgItem(window, ID_THEME), width-366, 30, 160, 180, TRUE);
-    MoveWindow(GetDlgItem(window, ID_LANGUAGE), width-194, 30, 166, 180, TRUE);
-    MoveWindow(GetDlgItem(window, ID_SUBTITLE), x, 78, content, 28, TRUE);
-    MoveWindow(GetDlgItem(window, ID_ACCOUNT), x, 112, content, 40, TRUE);
-    MoveWindow(GetDlgItem(window, ID_PC_LABEL), x+20, 180, content-270, 26, TRUE);
-    MoveWindow(GetDlgItem(window, ID_DETAILS), width-248, 171, 200, 36, TRUE);
-    MoveWindow(GetDlgItem(window, ID_PC_SUMMARY), x+20, 220, content-40, 74, TRUE);
-    MoveWindow(GetDlgItem(window, ID_PROTECTION_NOTE), x+20, 333, content-40, 68, TRUE);
-    MoveWindow(GetDlgItem(window, ID_TIMER_LABEL), x+20, 442, content-40, 26, TRUE);
-    MoveWindow(GetDlgItem(window, ID_DELAY), x+20, 480, 90, 32, TRUE);
-    MoveWindow(GetDlgItem(window, ID_UNIT), x+122, 480, 116, 160, TRUE);
-    MoveWindow(GetDlgItem(window, ID_SCHEDULE), x+254, 478, 154, 36, TRUE);
-    MoveWindow(GetDlgItem(window, ID_CANCEL), x+420, 478, 154, 36, TRUE);
-    MoveWindow(timer_status, x+20, 524, content-40, 26, TRUE);
-    MoveWindow(GetDlgItem(window, ID_LOG_LABEL), x, 577, content-176, 28, TRUE);
-    MoveWindow(GetDlgItem(window, ID_OPEN_LOG), width-178, 570, 150, 36, TRUE);
-    MoveWindow(log_window, x, 618, content, height-646, TRUE);
-    MoveWindow(progress_window, x, height-12, content, 5, TRUE);
-    InvalidateRect(window, NULL, TRUE);
+    int height = r.bottom;
+    DashboardLayout d = dashboard_layout(window);
+    int x = d.x, content = d.width;
+    theme_move(GetDlgItem(window, ID_APP_ICON), 20, 24, 32, 32);
+    theme_move(GetDlgItem(window, ID_BRAND), 62, 29, 156, 26);
+    theme_move(GetDlgItem(window, ID_HOME), 12, 84, 200, 40);
+    theme_move(GetDlgItem(window, ID_NAV_LABEL), 24, 88, 176, 24);
+    int nav_buttons[] = {ID_SYSTEM_INFO, ID_SETUP, ID_NETWORK, ID_BLOAT, ID_WIFI, ID_RESTORE, ID_DRIVERS};
+    for (int i = 0; i < 7; ++i) {
+        theme_move(GetDlgItem(window, nav_buttons[i]), 12, 130 + i * 46, 200, 40);
+    }
+    theme_move(GetDlgItem(window, ID_SYSTEM_PROTECTION), 12, height - 98, 200, 38);
+    theme_move(GetDlgItem(window, ID_BACKUPS), 12, height - 52, 200, 38);
+    theme_move(GetDlgItem(window, ID_TITLE), x, 24, content - 320, 38);
+    theme_move(GetDlgItem(window, ID_THEME), x + content - 300, 26, 144, 180);
+    theme_move(GetDlgItem(window, ID_LANGUAGE), x + content - 144, 26, 144, 180);
+    theme_move(GetDlgItem(window, ID_SUBTITLE), x, 66, content, 22);
+    theme_move(GetDlgItem(window, ID_ACCOUNT), x, d.timer.bottom + 66, content, 22);
+    theme_move(GetDlgItem(window, ID_ADVANCED), x, d.timer.bottom + 20, 158, 34);
+    theme_move(GetDlgItem(window, ID_BACK), x, 24, 180, 36);
+    int top = d.computer.top;
+    theme_move(GetDlgItem(window, ID_PC_LABEL), x + 20, top + 16, content - 260, 24);
+    theme_move(GetDlgItem(window, ID_DETAILS), x + content - 220, top + 16, 200, 34);
+    theme_move(GetDlgItem(window, ID_PC_SUMMARY), x + 20, top + 52, content - 40, 46);
+    theme_move(GetDlgItem(window, ID_QUICK_LABEL), x, d.computer.bottom + 20, content, 26);
+    int tile_width = (content - 32) / 3;
+    int quick[] = {ID_QUICK_SETUP, ID_QUICK_NETWORK, ID_QUICK_BLOAT};
+    for (int i = 0; i < 3; ++i)
+        theme_move(GetDlgItem(window, quick[i]), x + i * (tile_width + 16), d.tile_top, tile_width, d.tile_height);
+    int timer_width = d.timer.right - d.timer.left;
+    top = d.timer.top;
+    theme_move(GetDlgItem(window, ID_TIMER_LABEL), x + 18, top + 16, timer_width - 36, 24);
+    theme_move(GetDlgItem(window, ID_DELAY), x + 18, top + 50, 56, 34);
+    theme_move(GetDlgItem(window, ID_UNIT), x + 82, top + 50, 112, 160);
+    theme_move(GetDlgItem(window, ID_SCHEDULE), x + 204, top + 50, 130, 34);
+    theme_move(GetDlgItem(window, ID_CANCEL), x + 344, top + 50, 134, 34);
+    theme_move(timer_status, x + 18, top + 98, timer_width - 36, 24);
+    int note_x = d.safety.left + 18, note_width = d.safety.right - d.safety.left - 36;
+    theme_move(GetDlgItem(window, ID_SAFETY_LABEL), note_x, top + 16, note_width, 24);
+    theme_move(GetDlgItem(window, ID_PROTECTION_NOTE), note_x, top + 48, note_width, 72);
+    theme_move(GetDlgItem(window, ID_LOG_LABEL), x, d.log_top, content - 150, 26);
+    theme_move(GetDlgItem(window, ID_OPEN_LOG), x + content - 134, d.log_top - 4, 134, 30);
+    theme_move(log_window, x, d.log_top + 34, content, max(32, min(112, height - d.log_top - 50)));
+    theme_move(progress_window, x, height - 8, content, 3);
+    HWND page=confirmation_window?confirmation_window:active_page;
+    if (IsWindow(page)) theme_move(page,d.x-24,72,d.width+48,height-72);
+    dashboard_visibility();
+    theme_repaint(window);
 }
 
 static void paint_dashboard(HWND window) {
     PAINTSTRUCT paint; HDC dc = BeginPaint(window, &paint);
-    RECT r; GetClientRect(window, &r); FillRect(dc, &r, g_theme.background_brush);
-    RECT side = {0, 0, 232, r.bottom}; FillRect(dc, &side, g_theme.surface_brush);
-    HPEN pen = CreatePen(PS_SOLID, 1, g_theme.border);
-    HGDIOBJ old_pen = SelectObject(dc, pen), old_brush = SelectObject(dc, g_theme.surface_brush);
-    MoveToEx(dc, 232, 0, NULL); LineTo(dc, 232, r.bottom);
-    RoundRect(dc, 258, 158, r.right-28, 310, 16, 16);
-    RoundRect(dc, 258, 322, r.right-28, 412, 16, 16);
-    RoundRect(dc, 258, 426, r.right-28, 562, 16, 16);
-    SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(pen); EndPaint(window, &paint);
+    RECT r; GetClientRect(window, &r);
+    FillRect(dc, &r, g_theme.background_brush);
+
+    int sidebar_w = 224;
+    RECT side = {0, 0, sidebar_w, r.bottom};
+    FillRect(dc, &side, g_theme.sidebar_brush);
+
+    HPEN pen = CreatePen(PS_SOLID, 1, g_theme.sidebar_border);
+    HGDIOBJ old_pen = SelectObject(dc, pen);
+    MoveToEx(dc, sidebar_w, 0, NULL); LineTo(dc, sidebar_w, r.bottom);
+
+    // Divider line in sidebar above bottom buttons
+    MoveToEx(dc, 16, r.bottom - 110, NULL); LineTo(dc, sidebar_w - 16, r.bottom - 110);
+
+    DashboardLayout d = dashboard_layout(window);
+    if (!active_page && !confirmation_window) {
+        theme_card(dc, &d.computer);
+        theme_card(dc, &d.timer);
+    }
+
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+    EndPaint(window, &paint);
 }
 
 static BOOL CALLBACK translate_owned(HWND window, LPARAM lp) {
@@ -566,7 +710,7 @@ static BOOL CALLBACK find_owned_modal(HWND window, LPARAM argument) {
 /* A common dialog may disable a secondary window while leaving the root enabled.
    Do not destroy its owner, change languages, or start another task in its nested loop. */
 static BOOL owned_modal_active(HWND root) {
-    if (!IsWindowEnabled(root)) return TRUE;
+    if (confirmation_window || !IsWindowEnabled(root) || (active_page && !IsWindowEnabled(active_page))) return TRUE;
     ModalSearch search = {root, FALSE};
     EnumThreadWindows(GetCurrentThreadId(), find_owned_modal, (LPARAM)&search);
     return search.active;
@@ -578,25 +722,72 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         main_window = window;
         theme_attach(window);
         HWND heading = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_TITLE);
-        SendMessageW(heading, WM_SETFONT, (WPARAM)title_font, TRUE);
+        SendMessageW(heading, WM_SETFONT, (WPARAM)g_font_title, TRUE);
         HWND brand = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_BRAND);
-        SendMessageW(brand, WM_SETFONT, (WPARAM)title_font, TRUE); SetPropW(brand, L"WAIOCard", (HANDLE)1);
-        int labels[] = {ID_PC_LABEL, ID_PC_SUMMARY, ID_NAV_LABEL, ID_PROTECTION_NOTE};
+        SendMessageW(brand, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        HWND logo=app_control(window,L"STATIC",L"",SS_ICON,0,0,32,32,ID_APP_ICON);
+        SendMessageW(logo,STM_SETICON,(WPARAM)LoadImageW(g_instance,MAKEINTRESOURCEW(1),IMAGE_ICON,32,32,LR_SHARED),0);
+        SetPropW(logo,L"WAIOSidebar",(HANDLE)1);
+        SetPropW(logo,L"WAIOCard",(HANDLE)1);
+        app_control(window,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,ID_BACK);
+        app_control(window,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,ID_ADVANCED);
+        SetPropW(app_control(window,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,ID_HOME),L"WAIOSidebar",(HANDLE)1);
+        SetPropW(brand, L"WAIOCard", (HANDLE)1);
+        SetPropW(brand, L"WAIOSidebar", (HANDLE)1);
+
+        HWND nav_label = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_NAV_LABEL);
+        SendMessageW(nav_label, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        SetPropW(nav_label, L"WAIOCard", (HANDLE)1);
+        SetPropW(nav_label, L"WAIOSidebar", (HANDLE)1);
+        SetPropW(nav_label, L"WAIOSecondary", (HANDLE)1);
+
+        int labels[] = {ID_PC_LABEL, ID_PC_SUMMARY, ID_PROTECTION_NOTE};
         for (unsigned i = 0; i < ARRAYSIZE(labels); ++i)
             SetPropW(app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, labels[i]), L"WAIOCard", (HANDLE)1);
-        int extra[] = {ID_SYSTEM_INFO, ID_BACKUPS, ID_SYSTEM_PROTECTION, ID_DETAILS};
-        for (unsigned i = 0; i < ARRAYSIZE(extra); ++i)
-            SetPropW(app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, extra[i]), L"WAIOCard", (HANDLE)1);
+        SendMessageW(GetDlgItem(window, ID_PC_LABEL), WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        HWND quick_label = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_QUICK_LABEL);
+        SendMessageW(quick_label, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        HWND safety_label = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_SAFETY_LABEL);
+        SendMessageW(safety_label, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+        SetPropW(safety_label, L"WAIOCard", (HANDLE)1);
+        SetPropW(GetDlgItem(window, ID_PROTECTION_NOTE), L"WAIOSecondary", (HANDLE)1);
+        const int quick_ids[] = {ID_QUICK_SETUP, ID_QUICK_NETWORK, ID_QUICK_BLOAT};
+        const wchar_t *glyphs[] = {L"\uE713", L"\uE774", L"\uE74C"};
+        for (int i = 0; i < 3; ++i) {
+            HWND action = app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, quick_ids[i]);
+            SetPropW(action, L"WAIOQuickAction", (HANDLE)1);
+            SetPropW(action, L"WAIOGlyph", (HANDLE)glyphs[i]);
+        }
+
+        int nav_buttons[] = {ID_SYSTEM_INFO, ID_SETUP, ID_NETWORK, ID_BLOAT, ID_WIFI, ID_RESTORE, ID_DRIVERS};
+        for (int i = 0; i < 7; ++i) {
+            HWND btn = app_control(window, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, nav_buttons[i]);
+            SetPropW(btn, L"WAIOSidebar", (HANDLE)1);
+        }
+
+        int bottom_buttons[] = {ID_SYSTEM_PROTECTION, ID_BACKUPS};
+        for (int i = 0; i < 2; ++i) {
+            HWND btn = app_control(window, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, bottom_buttons[i]);
+            SetPropW(btn, L"WAIOSidebar", (HANDLE)1);
+        }
+
+        HWND details_btn = app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, ID_DETAILS);
+        SetPropW(details_btn, L"WAIOCard", (HANDLE)1);
+
         app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, ID_THEME);
         app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_SUBTITLE);
         app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_ACCOUNT);
-        int buttons[] = {ID_SETUP, ID_NETWORK, ID_BLOAT, ID_WIFI, ID_RESTORE, ID_DRIVERS};
-        for (int i = 0; i < 6; ++i) SetPropW(app_control(window, L"BUTTON", L"", WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 0, 0, buttons[i]), L"WAIOCard", (HANDLE)1);
+        SetPropW(GetDlgItem(window, ID_SUBTITLE), L"WAIOSecondary", (HANDLE)1);
+        SetPropW(GetDlgItem(window, ID_ACCOUNT), L"WAIOSecondary", (HANDLE)1);
+
         HWND language = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, ID_LANGUAGE);
         SendMessageW(language, CB_ADDSTRING, 0, (LPARAM)L"Tiếng Việt");
         SendMessageW(language, CB_ADDSTRING, 0, (LPARAM)L"English");
         SendMessageW(language, CB_SETCURSEL, g_vi ? 0 : 1, 0);
-        app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_TIMER_LABEL);
+
+        HWND timer_lbl = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_TIMER_LABEL);
+        SendMessageW(timer_lbl, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
+
         HWND delay = app_control(window, L"EDIT", L"30", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, 0, 0, 0, 0, ID_DELAY);
         SendMessageW(delay, EM_SETLIMITTEXT, 7, 0);
         app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, ID_UNIT);
@@ -604,9 +795,12 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, ID_CANCEL);
         timer_status = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, 0);
         SetPropW(timer_status, L"WAIOCard", (HANDLE)1);
+
         int card[] = {ID_TIMER_LABEL, ID_DELAY, ID_UNIT, ID_SCHEDULE, ID_CANCEL};
         for (unsigned i = 0; i < ARRAYSIZE(card); ++i) SetPropW(GetDlgItem(window, card[i]), L"WAIOCard", (HANDLE)1);
-        app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_LOG_LABEL);
+
+        HWND log_lbl = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, ID_LOG_LABEL);
+        SendMessageW(log_lbl, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
         app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, ID_OPEN_LOG);
         log_window = app_control(window, L"EDIT", L"", WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
                                  0, 0, 0, 0, 0);
@@ -619,15 +813,23 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
         return 0;
     }
     case WM_COMMAND:
-        if (smoke_mode && LOWORD(wp) != ID_THEME && LOWORD(wp) != ID_LANGUAGE) return 0;
+        if (smoke_mode && LOWORD(wp)!=ID_THEME && LOWORD(wp)!=ID_LANGUAGE && LOWORD(wp)!=ID_HOME && LOWORD(wp)!=ID_BACK &&
+            LOWORD(wp)!=IDCANCEL && LOWORD(wp)!=ID_ADVANCED && LOWORD(wp)!=ID_SETUP && LOWORD(wp)!=ID_NETWORK && LOWORD(wp)!=ID_BLOAT &&
+            LOWORD(wp)!=ID_DETAILS && LOWORD(wp)!=ID_SYSTEM_INFO && LOWORD(wp)!=ID_QUICK_SETUP && LOWORD(wp)!=ID_QUICK_NETWORK && LOWORD(wp)!=ID_QUICK_BLOAT) return 0;
         if (owned_modal_active(window)) {
             if (LOWORD(wp) == ID_LANGUAGE && HIWORD(wp) == CBN_SELCHANGE)
                 SendDlgItemMessageW(window, ID_LANGUAGE, CB_SETCURSEL, g_vi ? 0 : 1, 0);
             return 0;
         }
+        if (app_busy(NULL) && LOWORD(wp)!=ID_LANGUAGE && LOWORD(wp)!=ID_THEME) return 0;
         switch (LOWORD(wp)) {
         case ID_SYSTEM_INFO:
         case ID_DETAILS: system_info_show(window); break;
+        case ID_HOME:
+        case ID_BACK:
+        case IDCANCEL: app_home(); break;
+        case ID_ADVANCED:
+            dashboard_advanced=!dashboard_advanced; update_labels(window); layout_main(window); break;
         case ID_THEME:
             if (HIWORD(wp) == CBN_SELCHANGE) theme_set((int)SendDlgItemMessageW(window, ID_THEME, CB_GETCURSEL, 0, 0), !smoke_mode);
             break;
@@ -644,8 +846,11 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
                     app_error(window, L"System Protection", ERROR_OPEN_FAILED);
             break;
         }
+        case ID_QUICK_SETUP:
         case ID_SETUP: optimizer_show(window); break;
+        case ID_QUICK_NETWORK:
         case ID_NETWORK: network_show(window); break;
+        case ID_QUICK_BLOAT:
         case ID_BLOAT: bloatware_show(window); break;
         case ID_WIFI: backup_wifi(window); break;
         case ID_RESTORE: restore_wifi(window); break;
@@ -668,7 +873,7 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
                 g_vi = SendDlgItemMessageW(window, ID_LANGUAGE, CB_GETCURSEL, 0, 0) == 0;
                 language_thread();
                 update_labels(window);
-                EnumThreadWindows(GetCurrentThreadId(), translate_owned, (LPARAM)window);
+                EnumChildWindows(window, translate_owned, (LPARAM)window);
                 RedrawWindow(window, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
                 language_save(window);
             }
@@ -704,10 +909,52 @@ static LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wp, LPARAM l
                         L"Win AIO Optimize", MB_OK | MB_ICONINFORMATION); return 0;
         }
         if (owned_modal_active(window)) return 0;
-        DestroyWindow(window); return 0;
+        closing_main=TRUE; DestroyWindow(window); return 0;
     case WM_DESTROY: KillTimer(window, 1); main_window = NULL; PostQuitMessage(smoke_failed ? 1 : 0); return 0;
     }
     return DefWindowProcW(window, message, wp, lp);
+}
+
+static BOOL CALLBACK count_app_windows(HWND window, LPARAM argument) {
+    wchar_t cls[80]; GetClassNameW(window,cls,ARRAYSIZE(cls));
+    if (!wcsncmp(cls,L"WAIO",4)) ++*(unsigned *)argument;
+    return TRUE;
+}
+static BOOL navigation_ui_test(HWND root) {
+    void (*pages[])(HWND)={optimizer_show,network_show,bloatware_show,system_info_show};
+    BOOL ok=TRUE;
+    app_home();
+    if (GetWindowLongPtrW(log_window,GWL_STYLE)&WS_VISIBLE) ok=FALSE;
+    SendMessageW(root,WM_COMMAND,ID_ADVANCED,0);
+    if (!(GetWindowLongPtrW(log_window,GWL_STYLE)&WS_VISIBLE)) ok=FALSE;
+    SendMessageW(root,WM_COMMAND,ID_ADVANCED,0);
+    for (unsigned i=0;i<ARRAYSIZE(pages);++i) {
+        pages[i](root); HWND page=active_page;
+        if (!IsWindow(page) || GetParent(page)!=root || GetAncestor(page,GA_ROOT)!=root ||
+            (GetWindowLongPtrW(page,GWL_STYLE)&WS_CAPTION)) { ok=FALSE; continue; }
+        unsigned top_levels=0;
+        EnumThreadWindows(GetCurrentThreadId(),count_app_windows,(LPARAM)&top_levels);
+        if (top_levels!=1) ok=FALSE;
+        const int sizes[][2]={{1040,740},{1920,1080},{1180,840}};
+        for (unsigned s=0;s<ARRAYSIZE(sizes);++s) {
+            SetWindowPos(root,NULL,0,0,sizes[s][0],sizes[s][1],SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+            RECT page_rect,back_rect;
+            GetWindowRect(page,&page_rect); GetWindowRect(GetDlgItem(root,ID_BACK),&back_rect);
+            if (page_rect.left+24!=back_rect.left || page_rect.right-page_rect.left>1168) ok=FALSE;
+        }
+        InterlockedExchange(&running_job,1);
+        app_home(); SendMessageW(page,WM_CLOSE,0,0);
+        if (active_page!=page) ok=FALSE;
+        InterlockedExchange(&running_job,0);
+        SendMessageW(page,WM_CLOSE,0,0);
+        if (!IsWindow(root) || !IsWindow(page) || active_page || (GetWindowLongPtrW(page,GWL_STYLE)&WS_VISIBLE)) ok=FALSE;
+        pages[i](root);
+        if (active_page!=page) ok=FALSE;
+        SendMessageW(root,WM_COMMAND,IDCANCEL,0);
+        if (!IsWindow(root) || active_page) ok=FALSE;
+        DestroyWindow(page);
+    }
+    return ok;
 }
 
 static BOOL elevation_arguments(wchar_t *text, size_t capacity, BOOL vietnamese, int theme) {
@@ -762,6 +1009,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
     g_instance = instance;
     int argc = 0; wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     BOOL test = FALSE, smoke = FALSE, inventory = FALSE, preview = FALSE, preview_setup = FALSE;
+    BOOL preview_network = FALSE, preview_info = FALSE;
     int language_override = -1;
     int theme_override = -1;
     for (int i = 1; argv && i < argc; ++i) {
@@ -769,6 +1017,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
         else if (!wcscmp(argv[i], L"--smoke-test")) smoke = TRUE;
         else if (!wcscmp(argv[i], L"--preview")) { preview = TRUE; smoke = TRUE; }
         else if (!wcscmp(argv[i], L"--preview=setup")) { preview = TRUE; smoke = TRUE; preview_setup = TRUE; }
+        else if (!wcscmp(argv[i], L"--preview=network")) { preview = TRUE; smoke = TRUE; preview_network = TRUE; }
+        else if (!wcscmp(argv[i], L"--preview=info")) { preview = TRUE; smoke = TRUE; preview_info = TRUE; }
         else if (!wcscmp(argv[i], L"--inventory-test")) inventory = TRUE;
         else if (!wcscmp(argv[i], L"--theme=light")) theme_override = 1;
         else if (!wcscmp(argv[i], L"--theme=dark")) theme_override = 2;
@@ -834,21 +1084,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
     }
     g_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    title_font = CreateFontW(-30, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_font_semibold = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_font_title = CreateFontW(-30, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                               OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_font_subtitle = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    title_font = g_font_title;
     theme_init();
     if (theme_override >= 0) theme_set(theme_override, FALSE);
     WNDCLASSW cls = {0}; cls.lpfnWndProc = main_proc; cls.hInstance = instance;
     cls.hCursor = LoadCursorW(NULL, IDC_ARROW); cls.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     cls.lpszClassName = L"WAIO.Main";
     RegisterClassW(&cls);
-    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Win AIO Optimize", WS_OVERLAPPEDWINDOW,
+    HWND window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Win AIO Optimize", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 1180, 840, NULL, NULL, instance, NULL);
     int result = 1;
     if (window) {
         ShowWindow(window, smoke && !preview ? SW_HIDE : show); UpdateWindow(window);
         if (preview) SetTimer(window, 2, 60000, NULL);
         if (preview_setup) optimizer_preview(window);
+        if (preview_network) network_preview(window);
+        if (preview_info) system_info_preview(window);
         if (smoke && !preview) {
             BOOL original = g_vi, ok = TRUE;
             SetDlgItemTextW(window, ID_DELAY, L"42");
@@ -869,7 +1126,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
             printf("System information translation/state: %s\n", info_ok ? "PASS" : "FAIL"); fflush(stdout);
             BOOL consent_ok = confirmation_ui_test(window);
             printf("Recovery consent failure/cancel: %s\n", consent_ok ? "PASS" : "FAIL"); fflush(stdout);
-            ok = ok && network_ok && optimizer_ok && info_ok && consent_ok && !smoke_failed;
+            BOOL navigation_ok=navigation_ui_test(window);
+            printf("Single-window navigation/close/Advanced/busy guard: %s\n",navigation_ok?"PASS":"FAIL"); fflush(stdout);
+            ok = ok && network_ok && optimizer_ok && info_ok && consent_ok && navigation_ok && !smoke_failed;
             g_vi = original; smoke_failed = !ok;
             printf("Read-only UI/language test: %s. No settings changed.\n", ok ? "PASS" : "FAIL");
             PostMessageW(window, WM_CLOSE, 0, 0);
@@ -877,11 +1136,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command, int s
         MSG msg; int status;
         while ((status = (int)GetMessageW(&msg, NULL, 0, 0)) > 0) {
             HWND root = GetAncestor(msg.hwnd, GA_ROOT);
-            if (!root || !IsDialogMessageW(root, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            if (msg.message==WM_KEYDOWN && msg.wParam==VK_ESCAPE && root==main_window && !confirmation_window) {
+                app_home();
+            } else if (!root || !IsDialogMessageW(root, &msg)) {
+                TranslateMessage(&msg); DispatchMessageW(&msg);
+            }
         }
         result = status < 0 ? 1 : (int)msg.wParam;
     }
-    theme_destroy(); DeleteObject(title_font); DeleteObject(g_font);
+    theme_destroy(); DeleteObject(g_font_subtitle); DeleteObject(g_font_title); DeleteObject(g_font_semibold); DeleteObject(g_font);
     log_ready = FALSE; DeleteCriticalSection(&log_lock); CoUninitialize();
     ReleaseMutex(mutex); CloseHandle(mutex);
     return result;

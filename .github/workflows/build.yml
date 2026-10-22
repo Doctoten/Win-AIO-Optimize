@@ -26,7 +26,7 @@ jobs:
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
-          name: win-aio-optimize-6.0.0-x64
+          name: win-aio-optimize-x64
           path: |
             build-native/bin/Release/win_aio_optimize.exe
             build-native/bin/Release/win_aio_optimize.exe.sha256

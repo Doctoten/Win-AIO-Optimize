@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(WinAIOOptimize VERSION 6.0.0 LANGUAGES C RC)
+project(WinAIOOptimize VERSION 6.0.1 LANGUAGES C RC)
 if(NOT WIN32)
   message(FATAL_ERROR "Windows 10/11 and a Windows C compiler are required")
 endif()

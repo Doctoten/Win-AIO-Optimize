@@ -18,12 +18,15 @@
 #include <wchar.h>
 #include <stdlib.h>
 
-#define APP_VERSION L"6.0.0"
+#define APP_VERSION L"6.0.1"
 #define WM_APP_JOB_DONE (WM_APP + 1)
 #define WM_APP_LOG (WM_APP + 2)
 #define WM_APP_LANGUAGE (WM_APP + 3)
 extern HINSTANCE g_instance;
 extern HFONT g_font;
+extern HFONT g_font_semibold;
+extern HFONT g_font_title;
+extern HFONT g_font_subtitle;
 extern BOOL g_vi;
 const wchar_t *tr(const wchar_t *vi, const wchar_t *en);
 HWND app_control(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD style,
@@ -55,10 +58,17 @@ void shutdown_cancel(HWND owner);
 void shutdown_status(wchar_t *text, size_t capacity);
 BOOL optimizer_self_test(void);
 BOOL app_is_smoke_test(void);
+/* Feature pages stay inside the main window. Close/back returns to the dashboard. */
+HWND app_main_window(void);
+void app_show_page(HWND page);
+void app_home(void);
+void app_page_destroyed(HWND page);
 BOOL network_ui_test(HWND owner);
 BOOL optimizer_ui_test(HWND owner);
 BOOL app_confirm_setup(HWND owner, const wchar_t *details, BOOL registry, BOOL restore);
 void optimizer_preview(HWND owner);
+void network_preview(HWND owner);
+void system_info_preview(HWND owner);
 HRESULT protection_com_security(void);
 DWORD protection_prepare(BOOL registry, BOOL restore);
 BOOL protection_self_test(void);

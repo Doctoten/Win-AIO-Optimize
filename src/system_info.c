@@ -72,8 +72,8 @@ static const Category categories[] = {
 #define INFO_MAX 2048
 typedef struct { unsigned category, instance; int field; wchar_t value[1024]; } InfoRow;
 typedef struct { InfoRow rows[INFO_MAX]; unsigned count, errors; BOOL truncated; } Inventory;
-typedef struct { HWND window, list, group, detail; Inventory *inventory, *pending; } InfoWindow;
-enum { INFO_LIST=4201, INFO_GROUP, INFO_REFRESH, INFO_COPY, INFO_DETAIL, INFO_STATUS, INFO_HEADING, INFO_NOTE };
+typedef struct { HWND window, list, group, detail; Inventory *inventory, *pending; BOOL advanced; } InfoWindow;
+enum { INFO_LIST=4201, INFO_GROUP, INFO_REFRESH, INFO_COPY, INFO_DETAIL, INFO_STATUS, INFO_HEADING, INFO_NOTE, INFO_ADVANCED };
 static HWND info_window;
 
 static BOOL memory_value(const wchar_t *value, ULONGLONG *bytes) {
@@ -241,28 +241,57 @@ static void collect_inventory(Inventory *inventory) {
 }
 
 void system_summary(wchar_t *text, size_t capacity) {
-    wchar_t cpu_name[256] = L"CPU", name[128] = L"PC"; DWORD bytes = sizeof(cpu_name), length = ARRAYSIZE(name);
-    RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-        L"ProcessorNameString", RRF_RT_REG_SZ, NULL, cpu_name, &bytes);
-    GetComputerNameW(name, &length);
-    MEMORYSTATUSEX memory = {0}; memory.dwLength = sizeof(memory); GlobalMemoryStatusEx(&memory);
-    StringCchPrintfW(text, capacity, tr(L"%s  •  Windows %s / build %lu\r\n%s\r\nRAM %.1f GiB  •  Khả dụng %.1f GiB",
-        L"%s  •  Windows %s / build %lu\r\n%s\r\nRAM %.1f GiB  •  Available %.1f GiB"),
-        name, app_windows_build() >= 22000 ? L"11" : L"10", app_windows_build(), cpu_name,
-        (double)memory.ullTotalPhys / 1073741824.0, (double)memory.ullAvailPhys / 1073741824.0);
+    if (app_is_smoke_test()) {
+        StringCchCopyW(text,capacity,L"Windows 11  •  32 GB RAM\r\nIntel Core i5  •  NVIDIA GeForce RTX");
+        return;
+    }
+    wchar_t cpu_name[256]=L"CPU"; DWORD bytes=sizeof(cpu_name);
+    RegGetValueW(HKEY_LOCAL_MACHINE,L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        L"ProcessorNameString",RRF_RT_REG_SZ,NULL,cpu_name,&bytes);
+    MEMORYSTATUSEX memory={0}; memory.dwLength=sizeof(memory);
+    if (GlobalMemoryStatusEx(&memory))
+        StringCchPrintfW(text,capacity,L"Windows %s  •  %.1f GB RAM\r\n%s",
+            app_windows_build()>=22000?L"11":L"10",(double)memory.ullTotalPhys/1073741824.0,cpu_name);
+    else StringCchPrintfW(text,capacity,L"Windows %s\r\n%s",app_windows_build()>=22000?L"11":L"10",cpu_name);
+}
+/* Keep everyday specifications visible; identifiers, raw codes and diagnostics are opt-in. */
+static BOOL essential_row(const InfoRow *row) {
+    if (row->field<0) return FALSE;
+    switch (row->category) {
+    case 0: return row->field==0 || row->field==6;
+    case 1: return row->field==0 || row->field==3;
+    case 2: return row->field==0 || row->field==2 || row->field==3;
+    case 4: return row->field==0;
+    case 5: return row->field==0 || row->field==2;
+    case 6: return row->field==0 || row->field==4;
+    case 10: return row->field==1;
+    default: return FALSE;
+    }
 }
 static void info_layout(InfoWindow *state) {
-    RECT r; GetClientRect(state->window, &r); int width = r.right, height = r.bottom;
-    MoveWindow(GetDlgItem(state->window, INFO_HEADING), 24, 18, width-48, 28, TRUE);
-    MoveWindow(GetDlgItem(state->window, INFO_NOTE), 24, 50, width-48, 44, TRUE);
-    MoveWindow(state->group, 24, 104, 285, 400, TRUE);
-    MoveWindow(GetDlgItem(state->window, INFO_REFRESH), width-320, 102, 130, 34, TRUE);
-    MoveWindow(GetDlgItem(state->window, INFO_COPY), width-178, 102, 154, 34, TRUE);
-    MoveWindow(state->list, 24, 150, width-48, height-296, TRUE);
-    MoveWindow(state->detail, 24, height-134, width-48, 76, TRUE);
-    MoveWindow(GetDlgItem(state->window, INFO_STATUS), 24, height-46, width-48, 32, TRUE);
-    ListView_SetColumnWidth(state->list, 0, 210); ListView_SetColumnWidth(state->list, 1, 265);
-    ListView_SetColumnWidth(state->list, 2, width > 990 ? width-540 : 450);
+    RECT r; GetClientRect(state->window,&r); int width=r.right,height=r.bottom;
+    theme_move(GetDlgItem(state->window,INFO_HEADING),24,16,width-350,38);
+    theme_move(GetDlgItem(state->window,INFO_NOTE),24,60,width-48,26);
+    theme_move(GetDlgItem(state->window,INFO_REFRESH),width-320,18,130,34);
+    theme_move(GetDlgItem(state->window,INFO_ADVANCED),width-178,18,154,34);
+    theme_move(state->group,24,104,285,400);
+    theme_move(GetDlgItem(state->window,INFO_COPY),width-178,102,154,34);
+    int top=state->advanced?150:100;
+    int table_height=max(100,height-top-(state->advanced?146:62));
+    if (!state->advanced) table_height=min(table_height,36+max(1,ListView_GetItemCount(state->list))*36+8);
+    theme_report_layout(state->list,24,top,width-48,table_height);
+    theme_move(state->detail,24,height-134,width-48,76);
+    theme_move(GetDlgItem(state->window,INFO_STATUS),24,height-46,width-48,32);
+    ShowWindow(state->group,state->advanced?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(state->window,INFO_COPY),state->advanced?SW_SHOW:SW_HIDE);
+    ShowWindow(state->detail,state->advanced?SW_SHOW:SW_HIDE);
+    int available=width-48-GetSystemMetrics(SM_CXVSCROLL)-4;
+    int component=state->advanced?available*23/100:0;
+    int property=state->advanced?available*29/100:available*38/100;
+    ListView_SetColumnWidth(state->list,0,component);
+    ListView_SetColumnWidth(state->list,1,property);
+    ListView_SetColumnWidth(state->list,2,available-component-property);
+    theme_repaint(state->window);
 }
 static void render_inventory(InfoWindow *state) {
     int selected = ListView_GetNextItem(state->list, -1, LVNI_SELECTED);
@@ -274,9 +303,10 @@ static void render_inventory(InfoWindow *state) {
     Inventory *inventory = state->inventory;
     for (unsigned i = 0; inventory && i < inventory->count; ++i) {
         InfoRow *row = &inventory->rows[i];
-        if (filter >= 0 && (unsigned)filter != row->category) continue;
+        if (!state->advanced && !essential_row(row)) continue;
+        if (state->advanced && filter>=0 && (unsigned)filter!=row->category) continue;
         const Category *category = &categories[row->category]; wchar_t label[180];
-        if (row->instance) StringCchPrintfW(label, ARRAYSIZE(label), L"%s / %u", tr(category->vi, category->en), row->instance);
+        if (row->instance>1) StringCchPrintfW(label, ARRAYSIZE(label), L"%s / %u", tr(category->vi, category->en), row->instance);
         else StringCchCopyW(label, ARRAYSIZE(label), tr(category->vi, category->en));
         LVITEMW item = {0}; item.mask = LVIF_TEXT | LVIF_PARAM; item.pszText = label; item.iItem = ListView_GetItemCount(state->list); item.lParam = i;
         int index = ListView_InsertItem(state->list, &item);
@@ -290,13 +320,17 @@ static void render_inventory(InfoWindow *state) {
     if (!inventory) StringCchCopyW(status, ARRAYSIZE(status), tr(L"Chọn Làm mới để đọc thông tin máy.", L"Choose Refresh to read this computer's information."));
     else StringCchPrintfW(status, ARRAYSIZE(status), tr(L"%u mục  •  %u truy vấn lỗi  •  %s", L"%u entries  •  %u query errors  •  %s"),
         inventory->count, inventory->errors, inventory->truncated ? tr(L"Đã đạt giới hạn hiển thị", L"Display limit reached") : tr(L"Dữ liệu tại lần làm mới gần nhất", L"Snapshot from last refresh"));
+    if (inventory && !state->advanced) StringCchCopyW(status,ARRAYSIZE(status),inventory->errors?
+        tr(L"Một số thông tin chưa đọc được. Xem Nâng cao để biết chi tiết.",L"Some information is unavailable. See Advanced for details."):L"");
     SetDlgItemTextW(state->window, INFO_STATUS, status);
+    info_layout(state);
 }
 static void translate_info(InfoWindow *state) {
     SetWindowTextW(state->window, tr(L"Thông tin máy — Win AIO Optimize", L"System information — Win AIO Optimize"));
-    SetDlgItemTextW(state->window, INFO_HEADING, tr(L"Thông tin phần cứng & Windows", L"Hardware & Windows information"));
-    SetDlgItemTextW(state->window, INFO_NOTE, tr(L"Đọc trực tiếp từ Windows. Chọn nhóm để lọc, chọn dòng để xem đầy đủ. Không có thiết bị hoặc dữ liệu sẽ được ghi rõ.",
-        L"Read directly from Windows. Filter by category; select a row for its full value. Missing devices or data are identified."));
+    SetDlgItemTextW(state->window, INFO_HEADING, tr(L"Thông tin máy", L"Specifications"));
+    SetDlgItemTextW(state->window, INFO_NOTE, state->advanced?tr(L"Thông số đầy đủ. Chọn nhóm hoặc sao chép dòng cần dùng.",L"Full specifications. Filter by category or copy a row."):
+        tr(L"Các thông số chính của máy tính.",L"Your computer's essential specifications."));
+    SetDlgItemTextW(state->window,INFO_ADVANCED,state->advanced?tr(L"Thu gọn",L"Show less"):tr(L"Nâng cao",L"Advanced"));
     SetDlgItemTextW(state->window, INFO_REFRESH, tr(L"Làm mới", L"Refresh"));
     SetDlgItemTextW(state->window, INFO_COPY, tr(L"Sao chép dòng", L"Copy row"));
     LRESULT selected = SendMessageW(state->group, CB_GETCURSEL, 0, 0);
@@ -306,7 +340,8 @@ static void translate_info(InfoWindow *state) {
     SendMessageW(state->group, CB_SETCURSEL, selected < 0 ? 0 : selected, 0);
     const wchar_t *columns[] = {tr(L"Thành phần", L"Component"), tr(L"Thông tin", L"Property"), tr(L"Giá trị", L"Value")};
     for (int i = 0; i < 3; ++i) { LVCOLUMNW column = {0}; column.mask = LVCF_TEXT; column.pszText = (wchar_t *)columns[i]; ListView_SetColumn(state->list, i, &column); }
-    render_inventory(state);
+    render_inventory(state); info_layout(state);
+    RedrawWindow(state->list, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 static void inventory_worker(void *argument) { InfoWindow *state = argument; collect_inventory(state->pending); }
 static void refresh_info(InfoWindow *state) {
@@ -337,8 +372,10 @@ static LRESULT CALLBACK info_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_CREATE: {
         state = calloc(1, sizeof(*state)); if (!state) return -1;
         state->window = window; SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)state); theme_attach(window);
-        app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, INFO_HEADING);
+        HWND heading = app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, INFO_HEADING);
+        SendMessageW(heading, WM_SETFONT, (WPARAM)g_font_title, TRUE);
         app_control(window, L"STATIC", L"", 0, 0, 0, 0, 0, INFO_NOTE);
+        app_control(window,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,INFO_ADVANCED);
         state->group = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, INFO_GROUP);
         app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, INFO_REFRESH);
         app_control(window, L"BUTTON", L"", WS_TABSTOP, 0, 0, 0, 0, INFO_COPY);
@@ -353,6 +390,7 @@ static LRESULT CALLBACK info_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     }
     case WM_COMMAND:
         if (!state || app_busy(NULL)) return 0;
+        if (LOWORD(wp)==INFO_ADVANCED) { state->advanced=!state->advanced; translate_info(state); }
         if (LOWORD(wp) == INFO_REFRESH) refresh_info(state);
         if (LOWORD(wp) == INFO_GROUP && HIWORD(wp) == CBN_SELCHANGE) render_inventory(state);
         if (LOWORD(wp) == INFO_COPY && !app_is_smoke_test()) copy_row(state);
@@ -370,21 +408,23 @@ static LRESULT CALLBACK info_proc(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_APP_LANGUAGE: if (state) translate_info(state); return 0;
     case WM_SIZE: if (state && wp != SIZE_MINIMIZED) info_layout(state); return 0;
     case WM_GETMINMAXINFO: ((MINMAXINFO *)lp)->ptMinTrackSize.x = 920; ((MINMAXINFO *)lp)->ptMinTrackSize.y = 640; return 0;
-    case WM_CLOSE: if (!app_busy(window) && IsWindowEnabled(window)) DestroyWindow(window); return 0;
+    case WM_CLOSE: if (!app_busy(NULL) && IsWindowEnabled(window)) app_home(); return 0;
     case WM_NCDESTROY:
+        app_page_destroyed(window);
         if (state) { free(state->inventory); free(state->pending); free(state); }
         SetWindowLongPtrW(window, GWLP_USERDATA, 0); info_window = NULL; break;
     }
     return DefWindowProcW(window, message, wp, lp);
 }
 void system_info_show(HWND owner) {
-    if (IsWindow(info_window)) { ShowWindow(info_window, SW_RESTORE); SetForegroundWindow(info_window); return; }
+    if (IsWindow(info_window)) { app_show_page(info_window); return; }
     WNDCLASSW cls = {0}; cls.hInstance = g_instance; cls.lpfnWndProc = info_proc;
     cls.lpszClassName = L"WAIO.SystemInfo"; cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
     RegisterClassW(&cls);
-    info_window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1100, 760, owner, NULL, g_instance, NULL);
-    if (info_window) ShowWindow(info_window, app_is_smoke_test() ? SW_HIDE : SW_SHOW);
+    info_window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0, 0, 1100, 760, app_main_window(), NULL, g_instance, NULL);
+    if (info_window) { SetPropW(info_window,L"WAIONav",(HANDLE)118); app_show_page(info_window); }
+    (void)owner;
 }
 BOOL system_info_self_test(void) {
     ULONGLONG bytes;
@@ -422,12 +462,34 @@ int system_info_inventory_test(void) {
     BOOL ok = inventory->count > 20 && inventory->errors == 0 && !inventory->truncated;
     free(inventory); return ok ? 0 : 1;
 }
+void system_info_preview(HWND owner) {
+    if (!app_is_smoke_test()) return;
+    system_info_show(owner);
+    if (!IsWindow(info_window)) return;
+    InfoWindow *state = (InfoWindow *)GetWindowLongPtrW(info_window, GWLP_USERDATA);
+    state->inventory = calloc(1, sizeof(*state->inventory));
+    if (!state->inventory) return;
+    const wchar_t *sample[] = {L"PREVIEW-PC", L"Sample hardware", L"Desktop PC", L"x64-based PC", L"Preview user", L"WORKGROUP"};
+    for (unsigned c = 0; c < ARRAYSIZE(categories); ++c) {
+        for (unsigned f = 0; f < min(categories[c].count, 6u); ++f) {
+            InfoRow *row = &state->inventory->rows[state->inventory->count++];
+            row->category = c; row->instance = 1; row->field = (int)f;
+            StringCchCopyW(row->value, ARRAYSIZE(row->value), c == 0 ? sample[f] : L"Preview data");
+        }
+    }
+    render_inventory(state);
+    ListView_SetItemState(state->list, 0, LVIS_SELECTED, LVIS_SELECTED);
+    ShowWindow(info_window, SW_SHOWNOACTIVATE);
+}
+
 BOOL system_info_ui_test(HWND owner) {
     if (!app_is_smoke_test()) return FALSE;
     system_info_show(owner); if (!info_window) return FALSE;
     InfoWindow *state = (InfoWindow *)GetWindowLongPtrW(info_window, GWLP_USERDATA);
     state->inventory = calloc(1, sizeof(*state->inventory)); if (!state->inventory) { DestroyWindow(info_window); return FALSE; }
-    state->inventory->count = 1; state->inventory->rows[0].instance = 1;
+    state->inventory->count = 2; state->inventory->rows[0].instance = 1;
+    state->inventory->rows[1].category=5; state->inventory->rows[1].instance=1; state->inventory->rows[1].field=1;
+    StringCchCopyW(state->inventory->rows[1].value,1024,L"SYNTHETIC-SERIAL");
     StringCchCopyW(state->inventory->rows[0].value, 1024, L"TEST-PC"); render_inventory(state);
     ListView_SetItemState(state->list, 0, LVIS_SELECTED, LVIS_SELECTED);
     BOOL ok = TRUE, original = g_vi;
@@ -435,6 +497,22 @@ BOOL system_info_ui_test(HWND owner) {
         g_vi = lang != 0; SendMessageW(info_window, WM_APP_LANGUAGE, 0, 0);
         wchar_t text[80]; ListView_GetItemText(state->list, 0, 1, text, ARRAYSIZE(text));
         if (wcscmp(text, tr(L"Tên máy", L"Computer name")) || ListView_GetNextItem(state->list, -1, LVNI_SELECTED) != 0) ok = FALSE;
+        LVCOLUMNW column = {0}; column.mask = LVCF_TEXT; column.pszText = text; column.cchTextMax = ARRAYSIZE(text);
+        if (!ListView_GetColumn(state->list, 0, &column) || wcscmp(text, tr(L"Thành phần", L"Component"))) ok = FALSE;
+    }
+    if (state->advanced || ListView_GetItemCount(state->list)!=1 || ListView_GetColumnWidth(state->list,0)) ok=FALSE;
+    SendMessageW(info_window,WM_COMMAND,INFO_ADVANCED,0);
+    if (!state->advanced || ListView_GetItemCount(state->list)!=2 || ListView_GetColumnWidth(state->list,0)<=0) ok=FALSE;
+    SendMessageW(info_window,WM_COMMAND,INFO_ADVANCED,0);
+    if (ListView_GetItemCount(state->list)!=1 || ListView_GetNextItem(state->list,-1,LVNI_SELECTED)!=0) ok=FALSE;
+    const int sizes[][2] = {{800,620}, {1120,820}, {1690,980}, {800,620}, {1120,820}};
+    for (unsigned i = 0; i < ARRAYSIZE(sizes); ++i) {
+        SetWindowPos(info_window, NULL, 0, 0, sizes[i][0], sizes[i][1], SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (!theme_list_readable(state->list, 3)) ok = FALSE;
+        RECT before,after; GetWindowRect(state->list,&before);
+        for (int c=0;c<3;++c) ListView_SetColumnWidth(state->list,c,ListView_GetColumnWidth(state->list,c));
+        GetWindowRect(state->list,&after);
+        if (!EqualRect(&before,&after)) ok=FALSE;
     }
     g_vi = original; DestroyWindow(info_window); return ok;
 }

@@ -1,6 +1,8 @@
 # Win AIO Optimize
 
-![Version](https://img.shields.io/badge/version-6.0.0-blue?style=for-the-badge)
+<img src="assets/logo.svg" alt="Win AIO Optimize" width="80" height="80">
+
+![Version](https://img.shields.io/badge/version-6.0.1-blue?style=for-the-badge)
 ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6?style=for-the-badge)
 ![Native C](https://img.shields.io/badge/native-C11%20%2B%20Win32-555555?style=for-the-badge)
 ![Portable](https://img.shields.io/badge/portable-EXE-2D9F2D?style=for-the-badge)
@@ -17,6 +19,8 @@
 **Win AIO Optimize** brings Windows optimization, optional-app removal, DNS configuration, backups, and a shutdown timer into one native desktop app. It runs directly from a portable EXE on Windows 10/11 x64, with no installation, Python, or additional runtime to set up.
 
 English and Vietnamese are included in the app. Choose the changes you want, read their effects, and confirm before applying. The Windows optimizer is written in C and works locally; PowerShell is only used by the optional download helper.
+
+All feature pages and change reviews stay in one main window. Use **Dashboard** or **Escape** to go back. Everyday information is shown first; **Advanced** reveals full specifications, network details and diagnostic logs. Registry backup and restore-point choices remain clearly visible in **Windows Setup**.
 
 <a id="usage-en"></a>
 
@@ -41,10 +45,10 @@ English and Vietnamese are included in the app. Choose the changes you want, rea
 
 **No manual download or installation is needed.** The command retrieves the launcher directly into PowerShell; it does not save a separate `.ps1` file. The launcher automatically downloads the portable EXE and checksum to `%LOCALAPPDATA%\WinAIOOptimize\Downloads`. Internet access is required.
 
-The launcher targets version `6.0.0` and stops if the release, checksum or version check fails. It never applies optimizations itself. SHA256 verifies file integrity; it is not a publisher signature.
+The launcher targets version `6.0.1` and stops if the release, checksum or version check fails. It never applies optimizations itself. SHA256 verifies file integrity; it is not a publisher signature.
 
 > [!NOTE]
-> The command requires `install.ps1` on the repository's `main` branch and a published `v6.0.0` release containing `win_aio_optimize.exe` and `win_aio_optimize.exe.sha256`. If these are unavailable, use the build instructions below.
+> The command requires `install.ps1` on the repository's `main` branch and a published `v6.0.1` release containing `win_aio_optimize.exe` and `win_aio_optimize.exe.sha256`. If these are unavailable, use the build instructions below.
 
 #### Manual method
 
@@ -68,7 +72,7 @@ The launcher targets version `6.0.0` and stops if the release, checksum or versi
 
 Use the selector in the top-right corner. On first launch, Vietnamese is selected when the Windows UI language is Vietnamese; otherwise, English is used. The app saves your choice for the account running it.
 
-Open network and optimization windows update immediately while keeping DNS input, selected options, and timer values. Complete or cancel an active task or confirmation before switching.
+Open pages update immediately while keeping DNS input, selected options, and timer values. Complete or cancel an active task or confirmation before switching.
 
 To override the language for one launch, run from the folder containing the EXE:
 
@@ -235,6 +239,8 @@ Developed by **Doctoten**. [Back to usage](#usage-en) · [Tiếng Việt](#tieng
 
 Ứng dụng tích hợp tiếng Anh và tiếng Việt. Chọn thay đổi bạn muốn, đọc ảnh hưởng và xác nhận trước khi áp dụng. Bộ tối ưu Windows được viết bằng C và chạy tại máy; PowerShell chỉ dùng cho công cụ tải xuống tùy chọn.
 
+Các trang chức năng và phần xem lại thay đổi nằm trong một cửa sổ chính. Nhấn **Tổng quan** hoặc **Escape** để quay lại. Mặc định chỉ hiển thị thông tin cần dùng; mục **Nâng cao** chứa thông số đầy đủ, chi tiết mạng và nhật ký. Hai lựa chọn sao lưu Registry và tạo điểm khôi phục vẫn hiển thị rõ trong **Windows Setup**.
+
 <a id="usage-vi"></a>
 
 ### Cách sử dụng
@@ -258,10 +264,10 @@ Developed by **Doctoten**. [Back to usage](#usage-en) · [Tiếng Việt](#tieng
 
 **Không cần tự tải file hay cài đặt.** Lệnh đọc script trực tiếp vào PowerShell, không lưu một file `.ps1` riêng. Script tự tải EXE portable và checksum vào `%LOCALAPPDATA%\WinAIOOptimize\Downloads`. Cách này cần kết nối Internet.
 
-Script mở phiên bản `6.0.0` và dừng nếu thiếu release, checksum hoặc xác minh phiên bản thất bại. Script không tự áp dụng tối ưu. SHA256 kiểm tra tính toàn vẹn của file, không phải chữ ký nhà phát hành.
+Script mở phiên bản `6.0.1` và dừng nếu thiếu release, checksum hoặc xác minh phiên bản thất bại. Script không tự áp dụng tối ưu. SHA256 kiểm tra tính toàn vẹn của file, không phải chữ ký nhà phát hành.
 
 > [!NOTE]
-> Để lệnh hoạt động, nhánh `main` phải có `install.ps1` và release `v6.0.0` đã công bố phải chứa `win_aio_optimize.exe` cùng `win_aio_optimize.exe.sha256`. Nếu chưa có, dùng hướng dẫn build bên dưới.
+> Để lệnh hoạt động, nhánh `main` phải có `install.ps1` và release `v6.0.1` đã công bố phải chứa `win_aio_optimize.exe` cùng `win_aio_optimize.exe.sha256`. Nếu chưa có, dùng hướng dẫn build bên dưới.
 
 #### Cách thủ công
 

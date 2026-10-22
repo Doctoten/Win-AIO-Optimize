@@ -3,8 +3,8 @@
 1 ICON "icon.ico"
 1 RT_MANIFEST "app.manifest"
 1 VERSIONINFO
- FILEVERSION 6,0,0,0
- PRODUCTVERSION 6,0,0,0
+ FILEVERSION 6,0,1,0
+ PRODUCTVERSION 6,0,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -16,21 +16,21 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "Doctoten\0"
       VALUE "FileDescription", "Win AIO Optimize - native C\0"
-      VALUE "FileVersion", "6.0.0\0"
+      VALUE "FileVersion", "6.0.1\0"
       VALUE "InternalName", "win_aio_optimize\0"
       VALUE "OriginalFilename", "win_aio_optimize.exe\0"
       VALUE "ProductName", "Win AIO Optimize\0"
-      VALUE "ProductVersion", "6.0.0\0"
+      VALUE "ProductVersion", "6.0.1\0"
     END
     BLOCK "042a04b0"
     BEGIN
       VALUE "CompanyName", "Doctoten\0"
       VALUE "FileDescription", "Win AIO Optimize - tiện ích tối ưu Windows\0"
-      VALUE "FileVersion", "6.0.0\0"
+      VALUE "FileVersion", "6.0.1\0"
       VALUE "InternalName", "win_aio_optimize\0"
       VALUE "OriginalFilename", "win_aio_optimize.exe\0"
       VALUE "ProductName", "Win AIO Optimize\0"
-      VALUE "ProductVersion", "6.0.0\0"
+      VALUE "ProductVersion", "6.0.1\0"
     END
   END
   BLOCK "VarFileInfo"

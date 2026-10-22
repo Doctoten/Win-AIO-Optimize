@@ -144,13 +144,13 @@ typedef struct {
     BOOL supported[ACTION_COUNT],visible[ACTION_COUNT];
     wchar_t reasons[ACTION_COUNT][160];
     int scroll,content_height,detail_action;
-    BOOL bloat,selected[ACTION_COUNT],has_result,initialized;
+    BOOL bloat,advanced,selected[ACTION_COUNT],has_result,initialized;
     PackageItem packages[PACKAGE_ITEMS_MAX]; unsigned package_count;
     unsigned mode,done,failed,skipped;
     Snapshot *restore;
 } OptimizerWindow;
 enum { ID_LIST=501, ID_APPLY, ID_RESTORE, ID_BLOAT, ID_REFRESH, ID_DETAIL, ID_STATUS, ID_NONE, ID_HEADING,
-       ID_SUBHEADING, ID_SEARCH, ID_REG_BACKUP, ID_RESTORE_POINT, ID_RECOVERY_HEADING, ID_RECOVERY_NOTE, ID_VIEWPORT };
+       ID_SUBHEADING, ID_SEARCH, ID_REG_BACKUP, ID_RESTORE_POINT, ID_RECOVERY_HEADING, ID_RECOVERY_NOTE, ID_VIEWPORT, ID_ADVANCED };
 #define ID_ACTION_BASE 800
 #define WM_SETUP_FOCUS (WM_APP + 10)
 typedef struct { const wchar_t *vi,*en; unsigned actions[5],count; } SetupGroup;
@@ -615,13 +615,13 @@ static void setup_layout_cards(OptimizerWindow *w) {
     for (unsigned g=0;g<ARRAYSIZE(setup_groups);++g) {
         RECT card=w->cards[g];
         ShowWindow(w->group_labels[g],IsRectEmpty(&card)?SW_HIDE:SW_SHOW);
-        if (!IsRectEmpty(&card)) MoveWindow(w->group_labels[g],card.left+16,card.top+16-w->scroll,card.right-card.left-32,26,TRUE);
+        if (!IsRectEmpty(&card)) theme_move(w->group_labels[g],card.left+16,card.top+16-w->scroll,card.right-card.left-32,26);
     }
     for (unsigned a=0;a<ACTION_COUNT;++a) {
         ShowWindow(w->checks[a],w->visible[a]?SW_SHOW:SW_HIDE);
         if (w->visible[a]) {
             RECT row=w->rows[a];
-            MoveWindow(w->checks[a],row.left,row.top-w->scroll,row.right-row.left,row.bottom-row.top,TRUE);
+            theme_move(w->checks[a],row.left,row.top-w->scroll,row.right-row.left,row.bottom-row.top);
         }
     }
     RedrawWindow(w->viewport,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
@@ -699,29 +699,33 @@ static LRESULT CALLBACK setup_view_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM 
 }
 static void optimizer_layout(OptimizerWindow *w) {
     RECT area; GetClientRect(w->window,&area); int width=area.right,height=area.bottom;
-    MoveWindow(GetDlgItem(w->window,ID_HEADING),24,20,width-48,38,TRUE);
-    MoveWindow(GetDlgItem(w->window,ID_SUBHEADING),24,64,width-48,30,TRUE);
-    MoveWindow(GetDlgItem(w->window,ID_NONE),24,w->bloat?104:240,160,34,TRUE);
-    MoveWindow(GetDlgItem(w->window,ID_REFRESH),196,w->bloat?104:240,110,34,TRUE);
+    theme_move(GetDlgItem(w->window,ID_HEADING),24,20,width-224,36);
+    theme_move(GetDlgItem(w->window,ID_ADVANCED),width-178,20,154,34);
+    SetDlgItemTextW(w->window,ID_ADVANCED,w->advanced?tr(L"Thu gọn",L"Show less"):tr(L"Nâng cao",L"Advanced"));
+    ShowWindow(w->detail,w->advanced?SW_SHOW:SW_HIDE);
+    theme_move(GetDlgItem(w->window,ID_SUBHEADING),24,60,width-48,26);
+    theme_move(GetDlgItem(w->window,ID_NONE),24,w->bloat?104:214,150,36);
+    theme_move(GetDlgItem(w->window,ID_REFRESH),184,w->bloat?104:214,100,36);
     if (!w->bloat) {
-        MoveWindow(GetDlgItem(w->window,ID_RECOVERY_HEADING),40,115,width-80,24,TRUE);
+        theme_move(GetDlgItem(w->window,ID_RECOVERY_HEADING),40,110,width-80,24);
         int half=(width-96)/2;
-        MoveWindow(GetDlgItem(w->window,ID_REG_BACKUP),40,147,half,38,TRUE);
-        MoveWindow(GetDlgItem(w->window,ID_RESTORE_POINT),56+half,147,half,38,TRUE);
-        MoveWindow(GetDlgItem(w->window,ID_RECOVERY_NOTE),40,195,width-80,24,TRUE);
-        MoveWindow(GetDlgItem(w->window,ID_SEARCH),width-324,240,300,34,TRUE);
-        MoveWindow(w->viewport,24,290,width-48,height-458,TRUE);
-        MoveWindow(GetDlgItem(w->window,ID_RESTORE),24,height-55,200,36,TRUE);
-        MoveWindow(GetDlgItem(w->window,ID_BLOAT),236,height-55,200,36,TRUE);
+        theme_move(GetDlgItem(w->window,ID_REG_BACKUP),40,136,half,42);
+        theme_move(GetDlgItem(w->window,ID_RESTORE_POINT),56+half,136,half,42);
+        theme_move(GetDlgItem(w->window,ID_RECOVERY_NOTE),40,178,width-80,22);
+        theme_move(GetDlgItem(w->window,ID_SEARCH),width-324,214,300,36);
+        theme_move(w->viewport,24,266,width-48,height-(w->advanced?426:354));
+        theme_move(GetDlgItem(w->window,ID_RESTORE),24,height-52,190,36);
+        theme_move(GetDlgItem(w->window,ID_BLOAT),224,height-52,180,36);
         setup_layout_cards(w);
     } else {
-        MoveWindow(w->list,24,154,width-48,height-322,TRUE);
-        ListView_SetColumnWidth(w->list,0,(width-48)/2);
-        ListView_SetColumnWidth(w->list,1,(width-48)/2-24);
+        theme_report_layout(w->list,24,154,width-48,height-(w->advanced?316:244));
+        int list_width=width-48-GetSystemMetrics(SM_CXVSCROLL)-4;
+        ListView_SetColumnWidth(w->list,0,w->advanced?list_width/2:list_width);
+        ListView_SetColumnWidth(w->list,1,w->advanced?list_width-list_width/2:0);
     }
-    MoveWindow(w->detail,24,height-154,width-48,66,TRUE);
-    MoveWindow(w->status,24,height-82,width-48,24,TRUE);
-    MoveWindow(GetDlgItem(w->window,ID_APPLY),width-228,height-55,204,36,TRUE);
+    theme_move(w->detail,24,height-146,width-48,60);
+    theme_move(w->status,24,height-78,width-48,22);
+    theme_move(GetDlgItem(w->window,ID_APPLY),width-228,height-52,204,36);
     RedrawWindow(w->window,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
 }
 static void setup_refresh_support(OptimizerWindow *w) {
@@ -803,7 +807,7 @@ static void begin_apply(OptimizerWindow *w) {
     BOOL accepted=setup_confirmation(w,confirmation); free(confirmation);
     if (!accepted) return;
     w->mode=w->bloat?2:0;
-    SetWindowTextW(w->status,tr(L"Đang xử lý... Xem nhật ký ở cửa sổ chính.",L"Working... See the main window log."));
+    SetWindowTextW(w->status,tr(L"Đang xử lý…",L"Working…"));
     app_start_job(w->window,optimizer_work,w);
 }
 static void begin_restore(OptimizerWindow *w) {
@@ -827,7 +831,7 @@ static void translate_optimizer(OptimizerWindow *w) {
     SetDlgItemTextW(w->window,ID_HEADING,w->bloat?tr(L"Ứng dụng tùy chọn",L"Optional apps"):tr(L"Tối ưu Windows",L"Windows Setup"));
     SetDlgItemTextW(w->window,ID_SUBHEADING,w->bloat?
         tr(L"Chọn chính xác ứng dụng cần gỡ. Dữ liệu ứng dụng có thể bị xóa.",L"Choose the exact apps to remove. App data may be deleted."):
-        tr(L"Chọn cài đặt theo nhóm. Di chuột hoặc dùng Tab để xem ảnh hưởng.",L"Choose settings by category. Hover or use Tab to read their effects."));
+        tr(L"Chọn cài đặt muốn thay đổi. Bạn sẽ được xem lại trước khi áp dụng.",L"Select settings to change. Review them before applying."));
     SetDlgItemTextW(w->window,ID_APPLY,w->bloat?tr(L"Gỡ mục đã chọn…",L"Remove selected…"):tr(L"Xem lại & áp dụng…",L"Review & apply…"));
     SetDlgItemTextW(w->window,ID_RESTORE,tr(L"Khôi phục cài đặt…",L"Restore last settings…"));
     SetDlgItemTextW(w->window,ID_BLOAT,tr(L"Ứng dụng tùy chọn…",L"Optional apps…"));
@@ -878,6 +882,7 @@ static LRESULT CALLBACK optimizer_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM l
         HWND heading=app_control(hwnd,L"STATIC",L"",0,0,0,0,0,ID_HEADING);
         SendMessageW(heading,WM_SETFONT,(WPARAM)w->heading_font,TRUE);
         app_control(hwnd,L"STATIC",L"",0,0,0,0,0,ID_SUBHEADING);
+        app_control(hwnd,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,ID_ADVANCED);
         if (w->bloat) {
             w->list=app_control(hwnd,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SHOWSELALWAYS|WS_TABSTOP,0,0,0,0,ID_LIST);
             if (!w->list) return -1;
@@ -934,6 +939,7 @@ static LRESULT CALLBACK optimizer_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM l
             w->has_result=FALSE; setup_detail(w,a); setup_selection_status(w); return 0;
         }
         switch (LOWORD(wp)) {
+        case ID_ADVANCED: w->advanced=!w->advanced; optimizer_layout(w); break;
         case ID_APPLY: begin_apply(w); break;
         case ID_RESTORE: begin_restore(w); break;
         case ID_BLOAT: bloatware_show(hwnd); break;
@@ -969,13 +975,14 @@ static LRESULT CALLBACK optimizer_proc(HWND hwnd,UINT message,WPARAM wp,LPARAM l
     case WM_PAINT: {
         PAINTSTRUCT paint; HDC dc=BeginPaint(hwnd,&paint); RECT area; GetClientRect(hwnd,&area);
         FillRect(dc,&area,g_theme.background_brush);
-        if (w && !w->bloat) { RECT card={24,103,area.right-24,227}; theme_card(dc,&card); }
+        if (w && !w->bloat) { RECT card={24,98,area.right-24,202}; theme_card(dc,&card); }
         EndPaint(hwnd,&paint); return 0;
     }
     case WM_CLOSE:
         if (app_busy(NULL) || !IsWindowEnabled(hwnd)) return 0;
-        DestroyWindow(hwnd); return 0;
+        app_home(); return 0;
     case WM_NCDESTROY:
+        app_page_destroyed(hwnd);
         if (w) {
             DeleteObject(w->heading_font); DeleteObject(w->section_font); free(w->restore);
             if (w->initialized) free(w);
@@ -988,18 +995,20 @@ static HWND show_optimizer(HWND owner,BOOL bloat) {
     static ATOM cls=0;
     static HWND windows[2]={NULL,NULL};
     if (IsWindow(windows[bloat?1:0])) {
-        ShowWindow(windows[bloat?1:0],SW_RESTORE); SetForegroundWindow(windows[bloat?1:0]); return windows[bloat?1:0];
+        app_show_page(windows[bloat?1:0]); return windows[bloat?1:0];
     }
     if (!cls) {
         WNDCLASSW wc={0}; wc.lpfnWndProc=optimizer_proc; wc.hInstance=g_instance; wc.lpszClassName=L"WAIONativeOptimizer";
         wc.hCursor=LoadCursorW(NULL,IDC_ARROW); wc.hIcon=LoadIconW(g_instance,MAKEINTRESOURCEW(1)); cls=RegisterClassW(&wc);
     }
     OptimizerWindow *w=calloc(1,sizeof(*w)); if (!w) return NULL; w->bloat=bloat;
-    HWND hwnd=CreateWindowExW(WS_EX_CONTROLPARENT,L"WAIONativeOptimizer",L"Windows Setup",WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,
-        CW_USEDEFAULT,CW_USEDEFAULT,bloat?1000:1280,880,GetAncestor(owner,GA_ROOTOWNER),NULL,g_instance,w);
+    HWND hwnd=CreateWindowExW(WS_EX_CONTROLPARENT,L"WAIONativeOptimizer",L"Windows Setup",WS_CHILD|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,
+        0,0,bloat?1000:1280,880,app_main_window(),NULL,g_instance,w);
     if (!hwnd) { free(w); return NULL; }
     windows[bloat?1:0]=hwnd;
-    ShowWindow(hwnd,app_is_smoke_test()?SW_HIDE:SW_SHOW);
+    SetPropW(hwnd,L"WAIONav",(HANDLE)(INT_PTR)(bloat?103:101));
+    app_show_page(hwnd);
+    (void)owner;
     return hwnd;
 }
 void optimizer_show(HWND owner) { show_optimizer(owner,FALSE); }
@@ -1032,6 +1041,10 @@ BOOL optimizer_ui_test(HWND owner) {
             for (unsigned a=0;a<ACTION_COUNT;++a)
                 if (w->visible[a]!=(a==A_EXTENSIONS)) ok=FALSE;
         }
+        if (w->advanced || (GetWindowLongPtrW(w->detail,GWL_STYLE)&WS_VISIBLE)) ok=FALSE;
+        SendMessageW(window,WM_COMMAND,ID_ADVANCED,0);
+        if (!w->advanced || !(GetWindowLongPtrW(w->detail,GWL_STYLE)&WS_VISIBLE)) ok=FALSE;
+        SendMessageW(window,WM_COMMAND,ID_ADVANCED,0);
         for (int iteration=0;iteration<6;++iteration) {
             wchar_t text[1600];
             SendDlgItemMessageW(owner,111,CB_SETCURSEL,(iteration%2)?0:1,0);

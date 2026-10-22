@@ -6,7 +6,7 @@ This bootstrapper never applies Windows optimizations. All changes require conse
 [CmdletBinding()]
 param(
     [ValidatePattern('^6\.\d+\.\d+$')]
-    [string]$Version = '6.0.0',
+    [string]$Version = '6.0.1',
     [switch]$DownloadOnly
 )
 

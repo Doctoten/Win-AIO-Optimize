@@ -18,6 +18,10 @@ Windows may reuse a recent point under its creation-frequency policy (24 hours b
 
 ## Light and dark appearance
 
+Feature pages and change reviews are embedded in one main window. Dashboard/Back or Escape returns home without destroying page selections. The title-bar Close button exits the application when no job or review is active. Windows-owned file pickers and system settings still use Windows dialogs.
+
+Pages use the same centered content width as the dashboard. Layout computes card backgrounds before moving children and invalidates the complete page after placement. Report headers and bodies are placed explicitly together; native scrollbar and column updates cannot repeatedly shrink or shift the report. Headers own the top corners and report bodies join them without a second rounded seam.
+
 The default **Windows theme** option follows `AppsUseLightTheme`. **Light** and **Dark** allow an app-only override stored in the app's HKCU preference key. Theme changes repaint the dashboard, app dialogs, buttons, list headers, lists, edits and selectors without rebuilding controls or clearing their data. Windows setting changes are handled while the app is open. High Contrast uses the user's system colors instead of the custom palette.
 
 The app requests the documented [DWM dark title bar and rounded corners](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute) on Windows 11. Windows-owned file pickers, message boxes and some native chrome may retain the system's appearance.
@@ -26,7 +30,7 @@ Windows Setup uses grouped cards for Privacy, AI, Start & Search, System, Taskba
 
 ## System information
 
-The dashboard shows computer name, CPU, Windows build and physical/available RAM. **System information** provides a categorized, refreshable inventory with a selectable full-value view and an explicit **Copy row** action. Refresh runs in a background worker; data represents the most recent refresh, not continuous monitoring.
+The dashboard shows Windows, CPU and installed RAM. Account/build diagnostics and the activity log are hidden behind **Advanced**. **System information** initially shows essential Windows, CPU, RAM, graphics and storage properties. Its **Advanced** button reveals the full categorized inventory, full-value view and explicit **Copy row** action. Refresh runs in a background worker; data represents the most recent refresh, not continuous monitoring.
 
 Read-only WMI queries cover the computer/model/account, Windows version/build/install/boot times, CPU cores/threads/clock/virtualization, individual RAM modules, GPU/driver/display mode, physical disks, local volumes/free space, motherboard, BIOS, IP-enabled adapters/DNS/DHCP and battery. Native APIs add firmware mode and reported Secure Boot state. [DXGI adapter descriptions](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_adapter_desc1) provide dedicated/shared video-memory sizes without the 32-bit WMI `AdapterRAM` limitation.
 
@@ -42,4 +46,4 @@ System Protection phải được bật từ trước. Nút **Bảo vệ hệ th
 
 Giao diện mặc định **Theo Windows**, hỗ trợ chọn riêng **Sáng** hoặc **Tối**, giữ nguyên dữ liệu nhập khi đổi. Windows Setup chia cài đặt thành các nhóm, có tìm kiếm Anh/Việt, cuộn và bố cục thích ứng kích thước cửa sổ. Chuyển ngôn ngữ giữ nguyên tìm kiếm, mục tối ưu và lựa chọn bảo vệ; toàn bộ bề mặt nút được vẽ lại để tránh khoảng trắng sót lại. Chế độ tương phản cao sử dụng màu hệ thống. Hộp thoại do Windows quản lý có thể giữ giao diện của hệ điều hành.
 
-Trang **Thông tin máy** có bộ lọc nhóm, làm mới và sao chép dòng: máy/model, Windows, CPU, từng thanh RAM, GPU/VRAM/driver, ổ đĩa và phân vùng, mainboard, BIOS, mạng/DNS, pin, UEFI và Secure Boot. Dữ liệu là trạng thái tại lần làm mới. Mục không có hoặc không đọc được sẽ được ghi rõ; thông tin do driver cung cấp có thể không đầy đủ. Không thu thập mật khẩu/key sản phẩm và không tự ghi định danh phần cứng vào nhật ký hoặc gửi ra mạng.
+Các trang chức năng và phần xác nhận nằm trong một cửa sổ. Nhấn Tổng quan hoặc Escape để quay lại; lựa chọn được giữ nguyên. Thông tin máy mặc định chỉ hiện các thông số thiết yếu. Mở **Nâng cao** để xem bộ lọc nhóm, sao chép dòng và toàn bộ máy/model, Windows, CPU, từng thanh RAM, GPU/VRAM/driver, ổ đĩa, mainboard, BIOS, mạng/DNS, pin, UEFI và Secure Boot. Dữ liệu là trạng thái tại lần làm mới. Mục không có hoặc không đọc được sẽ được ghi rõ; thông tin do driver cung cấp có thể không đầy đủ. Không thu thập mật khẩu/key sản phẩm và không tự ghi định danh phần cứng vào nhật ký hoặc gửi ra mạng.

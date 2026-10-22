@@ -1,6 +1,6 @@
 # Windows Setup implementation and compatibility
 
-Version 6.0 runs the optimizer in C. No remote script, PowerShell process, shell command string, or downloaded optimization payload is used. Registry operations use the 64-bit view, services use the Service Control Manager, power settings use PowrProf, and optional app removal uses the Windows Runtime PackageManager ABI.
+The optimizer runs in C. No remote script, PowerShell process, shell command string, or downloaded optimization payload is used. Registry operations use the 64-bit view, services use the Service Control Manager, power settings use PowrProf, and optional app removal uses the Windows Runtime PackageManager ABI.
 
 ## Consent and recovery
 

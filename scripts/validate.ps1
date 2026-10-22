@@ -70,6 +70,7 @@ try {
 $expected = $hash + '  ' + [IO.Path]::GetFileName($binaryPath)
 if ($checksum -cne $expected) { throw 'Executable checksum is missing or stale. Rebuild before validation.' }
 Write-Host 'Executable metadata and SHA256: PASS'
+& (Join-Path $PSScriptRoot 'verify-icon.ps1') -Binary $binaryPath
 
 $checks = @(
     @{ Name = 'self-test'; Arguments = @('--self-test'); Timeout = 45 }

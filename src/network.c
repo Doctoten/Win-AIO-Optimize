@@ -4,6 +4,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <string.h>
+#include <stdio.h>
 
 enum {
     ID_NET_LIST = 3001, ID_NET_REFRESH, ID_NET_FAMILY, ID_NET_PROVIDER,
@@ -11,13 +12,14 @@ enum {
     ID_NET_FLUSH, ID_NET_RESET, ID_NET_WIFI, ID_NET_STATUS,
     ID_NET_HEADING, ID_NET_HINT, ID_NET_GROUP, ID_NET_FAMILY_LABEL,
     ID_NET_PROVIDER_LABEL, ID_NET_PRIMARY_LABEL, ID_NET_SECONDARY_LABEL,
-    ID_NET_NOTE
+    ID_NET_NOTE, ID_NET_ADVANCED
 };
 
 typedef struct {
     NET_LUID luid;
     ULONG ipv4_index, ipv6_index;
     BOOL ipv4_enabled, ipv6_enabled;
+    BOOL hardware, filter, has_address, gateway;
     IF_OPER_STATUS oper_status;
     wchar_t name[257], status[80], ip[1536], mac[96], dns[1536];
 } NetworkAdapter;
@@ -37,13 +39,16 @@ typedef struct {
 
 typedef struct {
     HWND window, list;
+    RECT dns_card;
     NetworkAdapter *rows;
     size_t row_count;
     NetworkJob *job;
     unsigned status_kind;
+    BOOL advanced;
 } NetworkWindow;
 
 static HWND network_window;
+static void network_layout(HWND window);
 static const wchar_t *const dns_presets[2][3][2] = {
     {{L"1.1.1.1", L"1.0.0.1"}, {L"8.8.8.8", L"8.8.4.4"}, {L"9.9.9.9", L"149.112.112.112"}},
     {{L"2606:4700:4700::1111", L"2606:4700:4700::1001"},
@@ -133,6 +138,13 @@ static const wchar_t *adapter_status(IF_OPER_STATUS status) {
     }
 }
 
+static int adapter_order(const void *left, const void *right) {
+    const NetworkAdapter *a = left, *b = right;
+    int a_rank = a->oper_status == IfOperStatusUp ? 0 : a->oper_status == IfOperStatusDormant ? 1 : 2;
+    int b_rank = b->oper_status == IfOperStatusUp ? 0 : b->oper_status == IfOperStatusDormant ? 1 : 2;
+    return a_rank != b_rank ? a_rank - b_rank : lstrcmpiW(a->name, b->name);
+}
+
 static DWORD collect_adapters(NetworkAdapter **rows, size_t *count) {
     ULONG size = 15 * 1024;
     IP_ADAPTER_ADDRESSES *buffer = NULL;
@@ -143,7 +155,7 @@ static DWORD collect_adapters(NetworkAdapter **rows, size_t *count) {
         if (size > 16 * 1024 * 1024) { result = ERROR_BUFFER_OVERFLOW; break; }
         buffer = (IP_ADAPTER_ADDRESSES *)malloc(size);
         if (!buffer) { result = ERROR_NOT_ENOUGH_MEMORY; break; }
-        result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_ALL_INTERFACES |
+        result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_ALL_INTERFACES | GAA_FLAG_INCLUDE_GATEWAYS |
                     GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST, NULL, buffer, &size);
         if (result != ERROR_BUFFER_OVERFLOW) break;
         free(buffer);
@@ -165,6 +177,13 @@ static DWORD collect_adapters(NetworkAdapter **rows, size_t *count) {
         row->ipv6_index = p->Ipv6IfIndex;
         row->ipv4_enabled = p->Ipv4Enabled;
         row->ipv6_enabled = p->Ipv6Enabled;
+        row->has_address=p->FirstUnicastAddress!=NULL;
+        row->gateway=p->FirstGatewayAddress!=NULL;
+        MIB_IF_ROW2 interface_row={0}; interface_row.InterfaceLuid=p->Luid;
+        if (GetIfEntry2(&interface_row)==NO_ERROR) {
+            row->hardware=interface_row.InterfaceAndOperStatusFlags.HardwareInterface;
+            row->filter=interface_row.InterfaceAndOperStatusFlags.FilterInterface;
+        }
         StringCchCopyW(row->name, ARRAYSIZE(row->name), p->FriendlyName ? p->FriendlyName : L"?");
         row->oper_status = p->OperStatus;
         StringCchCopyW(row->status, ARRAYSIZE(row->status), adapter_status(row->oper_status));
@@ -182,6 +201,7 @@ static DWORD collect_adapters(NetworkAdapter **rows, size_t *count) {
         if (!row->dns[0]) StringCchCopyW(row->dns, ARRAYSIZE(row->dns), L"—");
     }
     free(buffer);
+    if (total > 1) qsort(items, total, sizeof(*items), adapter_order);
     *rows = items;
     *count = total;
     return ERROR_SUCCESS;
@@ -239,35 +259,50 @@ static void network_work(void *context) {
     job->refresh_error = collect_adapters(&job->rows, &job->row_count);
 }
 
-static void show_rows(NetworkWindow *state, NetworkJob *job) {
-    ULONGLONG selected_luid = 0;
-    int selected = ListView_GetNextItem(state->list, -1, LVNI_SELECTED);
-    if (selected >= 0 && (size_t)selected < state->row_count) selected_luid = state->rows[selected].luid.Value;
-    SendMessageW(state->list, WM_SETREDRAW, FALSE, 0);
-    ListView_DeleteAllItems(state->list);
-    free(state->rows);
-    state->rows = job->rows;
-    state->row_count = job->row_count;
-    job->rows = NULL;
-    int restore = -1;
-    for (size_t i = 0; i < state->row_count; ++i) {
-        NetworkAdapter *row = &state->rows[i];
-        LVITEMW item = {0};
-        item.mask = LVIF_TEXT;
-        item.iItem = (int)i;
-        item.pszText = row->name;
-        int index = ListView_InsertItem(state->list, &item);
-        if (index >= 0) {
-            ListView_SetItemText(state->list, index, 1, row->status);
-            ListView_SetItemText(state->list, index, 2, row->ip);
-            ListView_SetItemText(state->list, index, 3, row->mac);
-            ListView_SetItemText(state->list, index, 4, row->dns);
-        }
-        if (row->luid.Value == selected_luid) restore = index;
+static int selected_adapter(NetworkWindow *state) {
+    int selected=ListView_GetNextItem(state->list,-1,LVNI_SELECTED);
+    if (selected<0) return -1;
+    LVITEMW item={0}; item.mask=LVIF_PARAM; item.iItem=selected;
+    if (!ListView_GetItem(state->list,&item) || item.lParam<0 || (size_t)item.lParam>=state->row_count) return -1;
+    return (int)item.lParam;
+}
+static unsigned adapter_tier(const NetworkAdapter *row) {
+    if (row->filter) return 4;
+    if (row->oper_status==IfOperStatusUp && row->has_address && (row->ipv4_enabled || row->ipv6_enabled)) {
+        if (row->hardware) return 0;
+        return row->gateway?1:2;
     }
-    if (restore >= 0) ListView_SetItemState(state->list, restore, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    SendMessageW(state->list, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(state->list, NULL, TRUE);
+    return row->hardware?3:4;
+}
+static void render_adapters(NetworkWindow *state, ULONGLONG selected_luid) {
+    SendMessageW(state->list,WM_SETREDRAW,FALSE,0);
+    ListView_DeleteAllItems(state->list);
+    unsigned tier=4;
+    for (size_t i=0;i<state->row_count;++i) tier=min(tier,adapter_tier(&state->rows[i]));
+    int restore=-1;
+    for (size_t i=0;i<state->row_count;++i) {
+        NetworkAdapter *row=&state->rows[i];
+        if (!state->advanced && (tier==4 || adapter_tier(row)!=tier)) continue;
+        LVITEMW item={0}; item.mask=LVIF_TEXT|LVIF_PARAM;
+        item.iItem=ListView_GetItemCount(state->list); item.pszText=row->name; item.lParam=(LPARAM)i;
+        int index=ListView_InsertItem(state->list,&item);
+        StringCchCopyW(row->status,ARRAYSIZE(row->status),adapter_status(row->oper_status));
+        ListView_SetItemText(state->list,index,1,row->status);
+        ListView_SetItemText(state->list,index,2,row->ip);
+        ListView_SetItemText(state->list,index,3,row->mac);
+        ListView_SetItemText(state->list,index,4,row->dns);
+        if (row->luid.Value==selected_luid) restore=index;
+    }
+    if (restore>=0) ListView_SetItemState(state->list,restore,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+    SendMessageW(state->list,WM_SETREDRAW,TRUE,0);
+    network_layout(state->window);
+    InvalidateRect(state->list,NULL,TRUE);
+}
+static void show_rows(NetworkWindow *state, NetworkJob *job) {
+    int selected=selected_adapter(state);
+    ULONGLONG luid=selected<0?0:state->rows[selected].luid.Value;
+    free(state->rows); state->rows=job->rows; state->row_count=job->row_count; job->rows=NULL;
+    render_adapters(state,luid);
 }
 
 static void network_complete(NetworkWindow *state) {
@@ -355,7 +390,7 @@ static void populate_provider(HWND window) {
 }
 
 static void request_dns(NetworkWindow *state, BOOL automatic) {
-    int selected = ListView_GetNextItem(state->list, -1, LVNI_SELECTED);
+    int selected = selected_adapter(state);
     if (selected < 0 || (size_t)selected >= state->row_count) {
         MessageBoxW(state->window, tr(L"Vui lòng chọn một card mạng trong danh sách.", L"Select a network adapter in the list."),
                     tr(L"Đổi DNS", L"Change DNS"), MB_OK | MB_ICONINFORMATION);
@@ -436,45 +471,70 @@ static void request_operation(NetworkWindow *state, NetworkJobKind kind) {
 }
 
 static void move_control(HWND window, int id, int x, int y, int w, int h) {
-    MoveWindow(GetDlgItem(window, id), x, y, w, h, TRUE);
+    HWND control=GetDlgItem(window,id);
+    if (id==ID_NET_LIST) theme_report_layout(control,x,y,w,h);
+    else theme_move(control,x,y,w,h);
 }
 
 static void network_layout(HWND window) {
     RECT rect;
     GetClientRect(window, &rect);
     int w = rect.right, h = rect.bottom;
-    int list_height = h - 360;
+    NetworkWindow *state = (NetworkWindow *)GetWindowLongPtrW(window, GWLP_USERDATA);
+    BOOL advanced=state && state->advanced;
+    int list_height = min(210, h - 442);
     if (list_height < 130) list_height = 130;
-    move_control(window, ID_NET_HEADING, 20, 16, w - 170, 25);
-    move_control(window, ID_NET_HINT, 20, 46, w - 40, 22);
-    move_control(window, ID_NET_REFRESH, w - 150, 15, 130, 30);
-    move_control(window, ID_NET_LIST, 20, 76, w - 40, list_height);
-    int y = 76 + list_height + 14;
-    move_control(window, ID_NET_GROUP, 20, y, w - 40, 168);
-    int half = (w - 72) / 2;
-    move_control(window, ID_NET_FAMILY_LABEL, 34, y + 26, 94, 24);
-    move_control(window, ID_NET_FAMILY, 132, y + 22, 145, 140);
-    move_control(window, ID_NET_PROVIDER_LABEL, 306, y + 26, 128, 24);
-    move_control(window, ID_NET_PROVIDER, 437, y + 22, w - 477, 180);
-    move_control(window, ID_NET_PRIMARY_LABEL, 34, y + 62, 120, 22);
-    move_control(window, ID_NET_PRIMARY, 34, y + 86, half, 29);
-    move_control(window, ID_NET_SECONDARY_LABEL, 46 + half, y + 62, 270, 22);
-    move_control(window, ID_NET_SECONDARY, 46 + half, y + 86, half, 29);
-    move_control(window, ID_NET_APPLY, 34, y + 126, 188, 30);
-    move_control(window, ID_NET_AUTO, 234, y + 126, 226, 30);
-    move_control(window, ID_NET_NOTE, 20, y + 178, w - 40, 23);
-    move_control(window, ID_NET_FLUSH, 20, y + 209, 188, 32);
-    move_control(window, ID_NET_RESET, 220, y + 209, 188, 32);
-    move_control(window, ID_NET_WIFI, 420, y + 209, 188, 32);
-    move_control(window, ID_NET_STATUS, 20, h - 28, w - 40, 22);
+    if (!advanced) list_height=min(list_height,36+max(1,ListView_GetItemCount(GetDlgItem(window,ID_NET_LIST)))*36+8);
+    int y=94+list_height+14;
+    /* Publish the new background geometry before any child changes position. */
+    if (state) SetRect(&state->dns_card,24,y,w-24,y+216);
+    move_control(window, ID_NET_HEADING, 24, 16, w - 344, 38);
+    move_control(window, ID_NET_HINT, 24, 58, w - 48, 24);
+    move_control(window, ID_NET_REFRESH, w - 310, 20, 130, 36);
+    move_control(window, ID_NET_ADVANCED, w - 168, 20, 144, 36);
+    move_control(window, ID_NET_LIST, 24, 94, w - 48, list_height);
+    int available = w - 48 - GetSystemMetrics(SM_CXVSCROLL) - 4;
+    const int ratios[] = {advanced?25:40, advanced?15:22, advanced?24:0, advanced?17:0, advanced?19:38};
+    int remaining = available;
+    for (int i = 0; i < 5; ++i) {
+        int column = i == 4 ? remaining : available * ratios[i] / 100;
+        ListView_SetColumnWidth(GetDlgItem(window, ID_NET_LIST), i, column);
+        remaining -= column;
+    }
+    move_control(window, ID_NET_GROUP, 42, y + 16, w - 84, 26);
+    int half = (w - 100) / 2;
+    move_control(window, ID_NET_FAMILY_LABEL, 42, y + 54, 80, 24);
+    move_control(window, ID_NET_FAMILY, 126, y + 48, 140, 180);
+    move_control(window, ID_NET_PROVIDER_LABEL, 294, y + 54, 128, 24);
+    move_control(window, ID_NET_PROVIDER, 426, y + 48, w - 468, 180);
+    move_control(window, ID_NET_PRIMARY_LABEL, 42, y + 98, 150, 22);
+    move_control(window, ID_NET_PRIMARY, 42, y + 124, half, 34);
+    move_control(window, ID_NET_SECONDARY_LABEL, 58 + half, y + 98, half, 22);
+    move_control(window, ID_NET_SECONDARY, 58 + half, y + 124, half, 34);
+    move_control(window, ID_NET_APPLY, 42, y + 174, 200, 34);
+    move_control(window, ID_NET_AUTO, 254, y + 174, 240, 34);
+    move_control(window, ID_NET_NOTE, 24, y + 228, w - 48, 22);
+    move_control(window, ID_NET_FLUSH, 24, y + 256, 200, 34);
+    move_control(window, ID_NET_RESET, 236, y + 256, 200, 34);
+    move_control(window, ID_NET_WIFI, 448, y + 256, 188, 34);
+    move_control(window, ID_NET_STATUS, 24, h - 32, w - 48, 22);
+    SetDlgItemTextW(window,ID_NET_HINT,advanced?
+        tr(L"Tất cả card mạng, gồm cả VPN, card ảo và các lớp lọc.",L"All adapters, including VPNs, virtual adapters and network filters."):
+        tr(L"Ưu tiên Ethernet/Wi-Fi. Xem card ảo và chi tiết trong Nâng cao.",L"Ethernet/Wi-Fi first. Advanced includes virtual adapters and details."));
+    ShowWindow(GetDlgItem(window,ID_NET_RESET),advanced?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(window,ID_NET_WIFI),advanced?SW_SHOW:SW_HIDE);
+    SetDlgItemTextW(window,ID_NET_ADVANCED,advanced?tr(L"Thu gọn",L"Show less"):tr(L"Nâng cao",L"Advanced"));
+    theme_repaint(window);
 }
 
 static void create_network_controls(NetworkWindow *state) {
     HWND window = state->window;
-    app_control(window, L"STATIC", tr(L"Card mạng & DNS", L"Adapters & DNS"), 0, 0, 0, 0, 0, ID_NET_HEADING);
-    app_control(window, L"STATIC", tr(L"Chọn card mạng, sau đó chọn giao thức và nhà cung cấp DNS.",
-        L"Select an adapter, then choose the protocol and DNS provider."), 0, 0, 0, 0, 0, ID_NET_HINT);
+    HWND heading = app_control(window, L"STATIC", tr(L"Card mạng & DNS", L"Adapters & DNS"), 0, 0, 0, 0, 0, ID_NET_HEADING);
+    SendMessageW(heading, WM_SETFONT, (WPARAM)g_font_title, TRUE);
+    app_control(window, L"STATIC", tr(L"Chọn card mạng và DNS. Nâng cao hiển thị mọi card mạng.",
+        L"Select an adapter and DNS provider. Advanced shows all adapters."), 0, 0, 0, 0, 0, ID_NET_HINT);
     app_control(window, L"BUTTON", tr(L"Tải lại", L"Refresh"), WS_TABSTOP, 0, 0, 0, 0, ID_NET_REFRESH);
+    app_control(window,L"BUTTON",L"",WS_TABSTOP,0,0,0,0,ID_NET_ADVANCED);
     state->list = app_control(window, WC_LISTVIEWW, L"", WS_TABSTOP | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                              0, 0, 0, 0, ID_NET_LIST);
     ListView_SetExtendedListViewStyle(state->list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
@@ -489,24 +549,32 @@ static void create_network_controls(NetworkWindow *state) {
         column.iSubItem = i;
         ListView_InsertColumn(state->list, i, &column);
     }
-    app_control(window, L"BUTTON", tr(L"DNS cho card mạng đã chọn", L"DNS for the selected adapter"), BS_GROUPBOX, 0, 0, 0, 0, ID_NET_GROUP);
+    HWND group = app_control(window, L"STATIC", tr(L"DNS cho card mạng đã chọn", L"DNS for the selected adapter"), 0, 0, 0, 0, 0, ID_NET_GROUP);
+    SetPropW(group, L"WAIOCard", (HANDLE)1);
+    SendMessageW(group, WM_SETFONT, (WPARAM)g_font_semibold, TRUE);
     app_control(window, L"STATIC", tr(L"Giao thức", L"Protocol"), 0, 0, 0, 0, 0, ID_NET_FAMILY_LABEL);
-    HWND family = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 0, 0, 0, 0, ID_NET_FAMILY);
+    HWND family = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, ID_NET_FAMILY);
     SendMessageW(family, CB_ADDSTRING, 0, (LPARAM)L"IPv4");
     SendMessageW(family, CB_ADDSTRING, 0, (LPARAM)L"IPv6");
     SendMessageW(family, CB_SETCURSEL, 0, 0);
     app_control(window, L"STATIC", tr(L"Nhà cung cấp", L"Provider"), 0, 0, 0, 0, 0, ID_NET_PROVIDER_LABEL);
-    HWND provider = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 0, 0, 0, 0, ID_NET_PROVIDER);
+    HWND provider = app_control(window, L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 0, 0, 0, 0, ID_NET_PROVIDER);
+    SetPropW(family, L"WAIOCard", (HANDLE)1);
+    SetPropW(provider, L"WAIOCard", (HANDLE)1);
     const wchar_t *providers[] = {L"Cloudflare", L"Google", L"Quad9", tr(L"Tùy chỉnh", L"Custom")};
     for (size_t i = 0; i < ARRAYSIZE(providers); ++i) SendMessageW(provider, CB_ADDSTRING, 0, (LPARAM)providers[i]);
     SendMessageW(provider, CB_SETCURSEL, 0, 0);
     app_control(window, L"STATIC", tr(L"DNS chính", L"Primary DNS"), 0, 0, 0, 0, 0, ID_NET_PRIMARY_LABEL);
     app_control(window, L"STATIC", tr(L"DNS phụ (không bắt buộc)", L"Secondary DNS (optional)"), 0, 0, 0, 0, 0, ID_NET_SECONDARY_LABEL);
+    const int card_labels[] = {ID_NET_FAMILY_LABEL, ID_NET_PROVIDER_LABEL, ID_NET_PRIMARY_LABEL, ID_NET_SECONDARY_LABEL};
+    for (unsigned i = 0; i < ARRAYSIZE(card_labels); ++i)
+        SetPropW(GetDlgItem(window, card_labels[i]), L"WAIOCard", (HANDLE)1);
     HWND primary = app_control(window, L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 0, 0, 0, 0, ID_NET_PRIMARY);
     HWND secondary = app_control(window, L"EDIT", L"", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, 0, 0, 0, 0, ID_NET_SECONDARY);
     SendMessageW(primary, EM_SETLIMITTEXT, 63, 0);
     SendMessageW(secondary, EM_SETLIMITTEXT, 63, 0);
-    app_control(window, L"BUTTON", tr(L"Áp dụng DNS…", L"Apply DNS…"), WS_TABSTOP, 0, 0, 0, 0, ID_NET_APPLY);
+    HWND apply_btn = app_control(window, L"BUTTON", tr(L"Áp dụng DNS…", L"Apply DNS…"), WS_TABSTOP, 0, 0, 0, 0, ID_NET_APPLY);
+    SetPropW(apply_btn, L"WAIOPrimary", (HANDLE)1);
     app_control(window, L"BUTTON", tr(L"DNS tự động (DHCP)…", L"Automatic DNS (DHCP)…"), WS_TABSTOP, 0, 0, 0, 0, ID_NET_AUTO);
     app_control(window, L"STATIC", tr(L"Chỉ giao thức đã chọn thay đổi. Chọn IPv4 và IPv6 lần lượt nếu muốn đổi cả hai.",
         L"Only the selected protocol changes. Apply separately to IPv4 and IPv6 to change both."), 0, 0, 0, 0, 0, ID_NET_NOTE);
@@ -523,7 +591,7 @@ static void translate_network(NetworkWindow *state) {
     SetWindowTextW(window, tr(L"Thiết lập mạng — Win AIO Optimize", L"Network setup — Win AIO Optimize"));
     static const struct { int id; const wchar_t *vi, *en; } labels[] = {
         {ID_NET_HEADING, L"Card mạng & DNS", L"Adapters & DNS"},
-        {ID_NET_HINT, L"Chọn card mạng, sau đó chọn giao thức và nhà cung cấp DNS.", L"Select an adapter, then choose the protocol and DNS provider."},
+        {ID_NET_HINT, L"Chọn card mạng và DNS. Nâng cao hiển thị mọi card mạng.", L"Select an adapter and DNS provider. Advanced shows all adapters."},
         {ID_NET_REFRESH, L"Tải lại", L"Refresh"},
         {ID_NET_GROUP, L"DNS cho card mạng đã chọn", L"DNS for the selected adapter"},
         {ID_NET_FAMILY_LABEL, L"Giao thức", L"Protocol"},
@@ -550,14 +618,14 @@ static void translate_network(NetworkWindow *state) {
     SendMessageW(provider, CB_DELETESTRING, 3, 0);
     SendMessageW(provider, CB_INSERTSTRING, 3, (LPARAM)tr(L"Tùy chỉnh", L"Custom"));
     SendMessageW(provider, CB_SETCURSEL, selected, 0);
-    for (size_t i = 0; i < state->row_count; ++i) {
-        StringCchCopyW(state->rows[i].status, ARRAYSIZE(state->rows[i].status), adapter_status(state->rows[i].oper_status));
-        ListView_SetItemText(state->list, (int)i, 1, state->rows[i].status);
-    }
+    int adapter_index=selected_adapter(state);
+    render_adapters(state,adapter_index<0?0:state->rows[adapter_index].luid.Value);
     SetDlgItemTextW(window, ID_NET_STATUS,
         state->status_kind == 1 ? tr(L"Tải lại thất bại; thông tin có thể đã cũ.", L"Refresh failed; information may be outdated.") :
         state->status_kind == 2 ? tr(L"Thao tác có lỗi. Xem nhật ký.", L"Operation had errors. See the log.") :
         tr(L"Sẵn sàng. Chọn card mạng trước khi đổi DNS.", L"Ready. Select an adapter before changing DNS."));
+    network_layout(window);
+    RedrawWindow(state->list, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 static LRESULT CALLBACK network_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -584,6 +652,12 @@ static LRESULT CALLBACK network_proc(HWND window, UINT message, WPARAM wparam, L
     case WM_COMMAND:
         if (!state || app_busy(NULL)) return 0;
         switch (LOWORD(wparam)) {
+        case ID_NET_ADVANCED: {
+            int selected=selected_adapter(state);
+            ULONGLONG luid=selected<0?0:state->rows[selected].luid.Value;
+            state->advanced=!state->advanced; render_adapters(state,luid);
+            network_layout(window); InvalidateRect(window,NULL,TRUE); break;
+        }
         case ID_NET_REFRESH: request_operation(state, NET_REFRESH); break;
         case ID_NET_FLUSH: request_operation(state, NET_FLUSH); break;
         case ID_NET_RESET: request_operation(state, NET_RESET); break;
@@ -607,10 +681,18 @@ static LRESULT CALLBACK network_proc(HWND window, UINT message, WPARAM wparam, L
     case WM_APP_LANGUAGE:
         if (state) translate_network(state);
         return 0;
+    case WM_PAINT: {
+        PAINTSTRUCT paint; HDC dc = BeginPaint(window, &paint);
+        RECT client; GetClientRect(window, &client);
+        FillRect(dc, &client, g_theme.background_brush);
+        if (state) theme_card(dc, &state->dns_card);
+        EndPaint(window, &paint); return 0;
+    }
     case WM_CLOSE:
-        if (!app_busy(window) && IsWindowEnabled(window)) DestroyWindow(window);
+        if (!app_busy(NULL) && IsWindowEnabled(window)) app_home();
         return 0;
     case WM_NCDESTROY:
+        app_page_destroyed(window);
         if (state) { free(state->rows); free(state); }
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         if (network_window == window) network_window = NULL;
@@ -621,8 +703,7 @@ static LRESULT CALLBACK network_proc(HWND window, UINT message, WPARAM wparam, L
 
 void network_show(HWND owner) {
     if (network_window && IsWindow(network_window)) {
-        ShowWindow(network_window, SW_RESTORE);
-        SetForegroundWindow(network_window);
+        app_show_page(network_window);
         return;
     }
     WNDCLASSEXW cls = {0};
@@ -638,11 +719,39 @@ void network_show(HWND owner) {
     }
     network_window = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName,
         tr(L"Thiết lập mạng — Win AIO Optimize", L"Network setup — Win AIO Optimize"),
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1030, 720,
-        owner, NULL, g_instance, NULL);
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, 0, 0, 1120, 820,
+        app_main_window(), NULL, g_instance, NULL);
     if (!network_window) { app_error(owner, tr(L"Cửa sổ mạng", L"Network window"), GetLastError()); return; }
-    ShowWindow(network_window, app_is_smoke_test() ? SW_HIDE : SW_SHOW);
+    SetPropW(network_window,L"WAIONav",(HANDLE)102);
+    app_show_page(network_window);
     UpdateWindow(network_window);
+}
+
+void network_preview(HWND owner) {
+    if (!app_is_smoke_test()) return;
+    network_show(owner);
+    if (!IsWindow(network_window)) return;
+    NetworkWindow *state = (NetworkWindow *)GetWindowLongPtrW(network_window, GWLP_USERDATA);
+    NetworkJob inventory = {0};
+    inventory.row_count = 14;
+    inventory.rows = calloc(inventory.row_count, sizeof(*inventory.rows));
+    if (!inventory.rows) return;
+    for (size_t i = 0; i < inventory.row_count; ++i) {
+        NetworkAdapter *row = &inventory.rows[i];
+        row->luid.Value = i + 1;
+        row->oper_status = i == 1 ? IfOperStatusDown : IfOperStatusUp;
+        row->hardware=i<2; row->has_address=i==0 || i==2 || i==3;
+        row->gateway=i==0 || i==2; row->filter=i>=4;
+        row->ipv4_enabled=row->ipv6_enabled=TRUE;
+        StringCchPrintfW(row->name, ARRAYSIZE(row->name), i==0?L"Ethernet":i==1?L"Wi-Fi":i==2?L"VPN":
+            i==3?L"vEthernet (sample switch)":L"vEthernet - sample filter %u", (unsigned)i);
+        StringCchCopyW(row->ip, ARRAYSIZE(row->ip), i == 0 ? L"192.0.2.10" : L"—");
+        StringCchCopyW(row->mac, ARRAYSIZE(row->mac), L"02-00-00-00-00-01");
+        StringCchCopyW(row->dns, ARRAYSIZE(row->dns), i == 0 ? L"1.1.1.1, 1.0.0.1" : L"—");
+    }
+    show_rows(state, &inventory);
+    ListView_SetItemState(state->list, 0, LVIS_SELECTED, LVIS_SELECTED);
+    ShowWindow(network_window, SW_SHOWNOACTIVATE);
 }
 
 BOOL network_ui_test(HWND owner) {
@@ -657,12 +766,17 @@ BOOL network_ui_test(HWND owner) {
     SendDlgItemMessageW(window, ID_NET_PROVIDER, CB_SETCURSEL, 3, 0);
     NetworkWindow *state = (NetworkWindow *)GetWindowLongPtrW(window, GWLP_USERDATA);
     NetworkJob inventory = {0};
-    inventory.rows = calloc(1, sizeof(*inventory.rows));
+    inventory.rows = calloc(3, sizeof(*inventory.rows));
     if (!inventory.rows) { DestroyWindow(window); return FALSE; }
-    inventory.row_count = 1;
-    inventory.rows[0].oper_status = IfOperStatusUp;
-    inventory.rows[0].luid.Value = 1;
-    StringCchCopyW(inventory.rows[0].name, ARRAYSIZE(inventory.rows[0].name), L"Test adapter");
+    inventory.row_count = 3;
+    for (unsigned i=0;i<3;++i) {
+        inventory.rows[i].oper_status=i==1?IfOperStatusUp:IfOperStatusDown;
+        inventory.rows[i].luid.Value=i+1;
+        inventory.rows[i].hardware=TRUE;
+        inventory.rows[i].has_address=i==1;
+        inventory.rows[i].ipv4_enabled=TRUE;
+        StringCchCopyW(inventory.rows[i].name,ARRAYSIZE(inventory.rows[i].name),L"Test adapter");
+    }
     show_rows(state, &inventory);
     ListView_SetItemState(state->list, 0, LVIS_SELECTED, LVIS_SELECTED);
     for (int lang = 0; lang < 2; ++lang) {
@@ -674,12 +788,83 @@ BOOL network_ui_test(HWND owner) {
         if (wcscmp(text, L"fd00::54")) ok = FALSE;
         GetDlgItemTextW(window, ID_NET_HEADING, text, ARRAYSIZE(text));
         if (wcscmp(text, tr(L"Card mạng & DNS", L"Adapters & DNS"))) ok = FALSE;
+        LVCOLUMNW column = {0}; column.mask = LVCF_TEXT; column.pszText = text; column.cchTextMax = ARRAYSIZE(text);
+        if (!ListView_GetColumn(state->list, 0, &column) || wcscmp(text, tr(L"Card mạng", L"Adapter"))) ok = FALSE;
         ListView_GetItemText(state->list, 0, 1, text, ARRAYSIZE(text));
         if (wcscmp(text, tr(L"Đã kết nối", L"Connected"))) ok = FALSE;
         if (SendDlgItemMessageW(window, ID_NET_FAMILY, CB_GETCURSEL, 0, 0) != 1 ||
             SendDlgItemMessageW(window, ID_NET_PROVIDER, CB_GETCURSEL, 0, 0) != 3 ||
             ListView_GetNextItem(state->list, -1, LVNI_SELECTED) != 0) ok = FALSE;
     }
+    if (state->advanced || ListView_GetColumnWidth(state->list,2) || ListView_GetColumnWidth(state->list,3) ||
+        ListView_GetItemCount(state->list)!=1 || selected_adapter(state)!=1) ok=FALSE;
+    SendMessageW(window,WM_COMMAND,ID_NET_ADVANCED,0);
+    if (!state->advanced || ListView_GetColumnWidth(state->list,2)<=0 || ListView_GetColumnWidth(state->list,3)<=0 ||
+        ListView_GetItemCount(state->list)!=3 || selected_adapter(state)!=1) ok=FALSE;
+    SendMessageW(window,WM_COMMAND,ID_NET_ADVANCED,0);
+    wchar_t custom[80]; GetDlgItemTextW(window,ID_NET_PRIMARY,custom,ARRAYSIZE(custom));
+    if (wcscmp(custom,L"fd00::53") || ListView_GetNextItem(state->list,-1,LVNI_SELECTED)!=0) ok=FALSE;
+    if (!ok) fprintf(stderr,"Network test: translated input, selection or adapter filter mismatch.\n");
+    /* Windows does not retain update regions for hidden windows. Expose only an
+       off-screen, non-activating diagnostic window to test real invalidation. */
+    RECT owner_rect; GetWindowRect(owner,&owner_rect);
+    LONG_PTR owner_ex=GetWindowLongPtrW(owner,GWL_EXSTYLE);
+    SetWindowLongPtrW(owner,GWL_EXSTYLE,owner_ex|WS_EX_NOACTIVATE);
+    SetWindowPos(owner,NULL,-20000,-20000,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    ShowWindow(owner,SW_SHOWNOACTIVATE);
+    if (!IsWindowVisible(window)) ok=FALSE;
+    const int sizes[][2] = {{800,620}, {1120,820}, {1690,980}, {800,620}, {1120,820}};
+    for (unsigned i = 0; i < ARRAYSIZE(sizes); ++i) {
+        ValidateRect(window,NULL);
+        SetWindowPos(window, NULL, 0, 0, sizes[i][0], sizes[i][1], SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        if (!theme_list_readable(state->list, 5)) { fprintf(stderr,"Network test: report geometry failed at size %u.\n",i); ok=FALSE; }
+        RECT dirty,client,list,field,visible,parent_client; GetClientRect(window,&client);
+        GetClientRect(owner,&parent_client); MapWindowPoints(owner,window,(POINT *)&parent_client,2);
+        IntersectRect(&visible,&client,&parent_client);
+        if (!GetUpdateRect(window,&dirty,FALSE) || !EqualRect(&dirty,&visible)) {
+            fprintf(stderr,"Network test: repaint region missing at size %u (%ld,%ld,%ld,%ld; client %ld,%ld).\n",
+                i,dirty.left,dirty.top,dirty.right,dirty.bottom,client.right,client.bottom); ok=FALSE;
+        }
+        GetWindowRect(state->list,&list); MapWindowPoints(HWND_DESKTOP,window,(POINT *)&list,2);
+        GetWindowRect(GetDlgItem(window,ID_NET_PRIMARY),&field); MapWindowPoints(HWND_DESKTOP,window,(POINT *)&field,2);
+        if (list.bottom>=state->dns_card.top || field.top<state->dns_card.top || field.bottom>state->dns_card.bottom) {
+            fprintf(stderr,"Network test: DNS form overlaps report at size %u.\n",i); ok=FALSE;
+        }
+        RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW);
+    }
+    NetworkJob refreshed={0}; refreshed.row_count=12;
+    refreshed.rows=calloc(refreshed.row_count,sizeof(*refreshed.rows));
+    if (!refreshed.rows) ok=FALSE;
+    else {
+        for (size_t i=0;i<refreshed.row_count;++i) {
+            NetworkAdapter *row=&refreshed.rows[i];
+            row->luid.Value=i==11?2:100+i;
+            row->oper_status=IfOperStatusUp; row->hardware=TRUE; row->has_address=TRUE; row->ipv4_enabled=TRUE;
+            StringCchCopyW(row->name,ARRAYSIZE(row->name),L"Synthetic adapter");
+        }
+        show_rows(state,&refreshed);
+        int old_top=state->dns_card.top;
+        if (ListView_GetItemCount(state->list)!=12 || selected_adapter(state)!=11) ok=FALSE;
+        for (size_t i=0;i<state->row_count;++i) state->rows[i].hardware=i==11;
+        ValidateRect(window,NULL); render_adapters(state,2);
+        RECT dirty,client,visible,parent_client; GetClientRect(window,&client);
+        GetClientRect(owner,&parent_client); MapWindowPoints(owner,window,(POINT *)&parent_client,2);
+        IntersectRect(&visible,&client,&parent_client);
+        if (ListView_GetItemCount(state->list)!=1 || selected_adapter(state)!=11 || state->dns_card.top>=old_top ||
+            !GetUpdateRect(window,&dirty,FALSE) || !EqualRect(&dirty,&visible)) ok=FALSE;
+        /* A virtual-only machine falls back to its gateway adapter. A hidden
+           selection must clear, rather than silently targeting another device. */
+        state->rows[11].hardware=FALSE; state->rows[0].gateway=TRUE;
+        render_adapters(state,2);
+        if (ListView_GetItemCount(state->list)!=1 || selected_adapter(state)!=-1) ok=FALSE;
+        SendMessageW(window,WM_COMMAND,ID_NET_ADVANCED,0);
+        if (ListView_GetItemCount(state->list)!=12) ok=FALSE;
+        GetDlgItemTextW(window,ID_NET_PRIMARY,custom,ARRAYSIZE(custom));
+        if (wcscmp(custom,L"fd00::53")) ok=FALSE;
+    }
+    ShowWindow(owner,SW_HIDE);
+    SetWindowLongPtrW(owner,GWL_EXSTYLE,owner_ex);
+    SetWindowPos(owner,NULL,owner_rect.left,owner_rect.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
     g_vi = original; DestroyWindow(window);
     return ok;
 }

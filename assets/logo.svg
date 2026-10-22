@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Win AIO Optimize">
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2789f5"/>
+      <stop offset="1" stop-color="#2541b7"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#blue)"/>
+  <path fill="#fff" fill-rule="evenodd" d="M57 190 112 68Q128 42 144 68L199 190H164L151 159H105L92 190ZM128 99 112 137H144Z"/>
+  <circle cx="191" cy="65" r="13" fill="#86f5d0"/>
+</svg>
